@@ -668,6 +668,44 @@ class EVENGClientWrapper(LoggerMixin):
             self.logger.error("Failed to connect nodes", **log_error(e, {"lab_path": lab_path, "src": src, "dst": dst}))
             raise EVENGAPIError(f"Failed to connect nodes: {str(e)}")
 
+    # ---- canvas text objects (EVE-NG stores their HTML base64-encoded) -------
+    async def list_text_objects(self, lab_path: str) -> Dict[str, Any]:
+        await self.ensure_connected()
+
+        def _do():
+            norm = self.api.normalize_path(lab_path)
+            r = self.client.get(f"/labs{norm}/textobjects") or {}
+            data = r.get("data") or {}
+            return {str(k): v for k, v in (data.items() if isinstance(data, dict) else enumerate(data))}
+        return await asyncio.to_thread(_do)
+
+    async def add_text_object(self, lab_path: str, name: str, data_b64: str) -> Optional[int]:
+        await self.ensure_connected()
+
+        def _do():
+            norm = self.api.normalize_path(lab_path)
+            r = self.client.post(f"/labs{norm}/textobjects",
+                                 data=json.dumps({"name": name, "type": "text", "data": data_b64})) or {}
+            new_id = (r.get("data") or {}).get("id")
+            return int(new_id) if new_id is not None else None
+        return await asyncio.to_thread(_do)
+
+    async def update_text_object(self, lab_path: str, obj_id: int, data_b64: str) -> None:
+        await self.ensure_connected()
+
+        def _do():
+            norm = self.api.normalize_path(lab_path)
+            self.client.put(f"/labs{norm}/textobjects/{int(obj_id)}", data=json.dumps({"data": data_b64}))
+        await asyncio.to_thread(_do)
+
+    async def delete_text_object(self, lab_path: str, obj_id: int) -> None:
+        await self.ensure_connected()
+
+        def _do():
+            norm = self.api.normalize_path(lab_path)
+            self.client.delete(f"/labs{norm}/textobjects/{int(obj_id)}")
+        await asyncio.to_thread(_do)
+
     async def set_startup_config(self, lab_path: str, node_id: str, config: str) -> int:
         """Store `config` as the node's startup-config in the lab file, enable
         'boot from config', and return the stored length (read back to verify)."""

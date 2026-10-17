@@ -98,6 +98,14 @@ async def handle(reader, writer):
         elif c == "show running-config":
             # a GRUB log line lands mid-output, like IOSv right after write memory
             writer.write(b"\r\nBuilding configuration...\r\n\r\nCurrent configuration : 120 bytes\r\n!\r\nhostname R1\r\n!\r\n*Oct 17 21:00:52.834: %GRUB-5-CONFIG_WRITTEN: GRUB configuration was written to disk successfully.\r\ninterface GigabitEthernet0/0\r\n ip address 10.0.12.1 255.255.255.252\r\n!\r\nend")
+        elif c == "show running-config | section ^interface":
+            writer.write(b"\r\ninterface Loopback0\r\n ip address 1.1.1.1 255.255.255.255\r\n ip ospf 1 area 0\r\n"
+                         b"interface GigabitEthernet0/0\r\n ip address 10.0.12.1 255.255.255.252\r\n ip ospf network point-to-point\r\n"
+                         b"interface GigabitEthernet0/1\r\n ip address 10.0.14.2 255.255.255.252\r\n"
+                         b"interface GigabitEthernet0/2\r\n description Trunk to SW1\r\n no ip address\r\n"
+                         b"interface GigabitEthernet0/2.10\r\n encapsulation dot1Q 10\r\n ip address 172.16.10.1 255.255.255.0\r\n"
+                         b"interface GigabitEthernet0/2.20\r\n encapsulation dot1Q 20\r\n ip address 172.16.20.1 255.255.255.0\r\n"
+                         b"interface GigabitEthernet0/3\r\n no ip address\r\n shutdown")
         elif c == "write memory":
             writer.write(b"\r\nBuilding configuration...\r\n[OK]")
         elif c == "show clock":

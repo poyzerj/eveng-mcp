@@ -26,6 +26,7 @@
 - `save_lab_configs` — `write memory` on every running node, then export the configs into the lab file so it boots preconfigured
 - `backup_lab_configs` — save every node's running-config to dated files on your PC (`~/eveng-mcp-backups/<lab>/<time>[-label]/`)
 - `reset_lab` — stop, wipe and restart nodes so they boot from the lab's exported configs (asks before doing it)
+- `label_lab_ips` — label the canvas from the running devices: IP/prefix (or VLAN mode on switches) next to each cabled port, loopbacks and VLAN interfaces under each node; placed to avoid lines, nodes and each other. `clear_lab_labels` removes them; `list_text_objects` shows what a lab's text objects contain
 - `power_nodes` / `node_power_status` — start, stop, or wipe nodes as the web UI user (POD 0 = admin) by running EVE-NG's `unl_wrapper` over SSH, so they show up in your browser and the console tool can reach them
 
 ## Quick setup (Windows + Claude Desktop)

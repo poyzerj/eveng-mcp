@@ -13,6 +13,7 @@ from .network_management import register_network_tools
 from .console_tools import register_console_tools
 from .power_tools import register_power_tools
 from .snapshot_tools import register_snapshot_tools
+from .label_tools import register_label_tools
 
 
 def register_tools(mcp: "FastMCP", eveng_client: "EVENGClientWrapper") -> None:
@@ -38,6 +39,9 @@ def register_tools(mcp: "FastMCP", eveng_client: "EVENGClientWrapper") -> None:
 
     # Snapshot tools (save/backup/reset whole-lab configs)
     register_snapshot_tools(mcp, eveng_client)
+
+    # Canvas labels (IPs next to links, loopbacks/SVIs under nodes)
+    register_label_tools(mcp, eveng_client)
 
 
 __all__ = [

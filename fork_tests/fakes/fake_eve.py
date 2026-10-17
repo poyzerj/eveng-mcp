@@ -6,7 +6,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 SESSIONS = set()
 LAB = {
     "nodes": {
-        "1": {"id": 1, "name": "R1"}, "2": {"id": 2, "name": "R2"}, "3": {"id": 3, "name": "R3"},
+        "1": {"id": 1, "name": "R1", "left": 249, "top": 150}, "2": {"id": 2, "name": "R2", "left": 648, "top": 150}, "3": {"id": 3, "name": "R3", "left": 650, "top": 500},
     },
     "networks": {},
     "ifaces": {n: {"ethernet": [{"name": f"Gi0/{i}", "network_id": 0} for i in range(4)], "serial": []}
@@ -53,6 +53,30 @@ class H(BaseHTTPRequestHandler):
             for idx, net in self.body().items():
                 LAB["ifaces"][mm.group(1)]["ethernet"][int(idx)]["network_id"] = int(net)
             return self.send(201, {"code": 201, "status": "success", "message": "Lab has been saved"})
+        if sub == "/topology" and method == "GET":
+            by_net = {}
+            for nid, ifs in LAB["ifaces"].items():
+                for i in ifs["ethernet"]:
+                    if i["network_id"]:
+                        by_net.setdefault(i["network_id"], []).append((nid, i["name"]))
+            links = [{"type": "ethernet", "source": f"node{a[0]}", "source_type": "node", "source_label": a[1],
+                      "destination": f"node{b[0]}", "destination_type": "node", "destination_label": b[1],
+                      "network_id": net} for net, ends in by_net.items() if len(ends) == 2 for a, b in [ends]]
+            return self.send(200, {"code": 200, "status": "success", "data": links})
+        if sub == "/textobjects" and method == "GET":
+            return self.send(200, {"code": 200, "status": "success", "data": LAB.setdefault("text", {})})
+        if sub == "/textobjects" and method == "POST":
+            b = self.body(); t = LAB.setdefault("text", {})
+            tid = max([int(k) for k in t] + [0]) + 1
+            t[str(tid)] = {"id": tid, "name": b["name"], "type": b["type"], "data": b["data"]}
+            return self.send(201, {"code": 201, "status": "success", "data": {"id": tid}})
+        mt = re.match(r"/textobjects/(\d+)$", sub)
+        if mt and method == "PUT":
+            self.body_cache = self.body(); LAB["text"][mt.group(1)].update(self.body_cache)
+            return self.send(201, {"code": 201, "status": "success", "message": "saved"})
+        if mt and method == "DELETE":
+            LAB.setdefault("text", {}).pop(mt.group(1), None)
+            return self.send(200, {"code": 200, "status": "success", "message": "deleted"})
         if sub == "/networks" and method == "GET":
             return self.send(200, {"code": 200, "status": "success", "data": LAB["networks"]})
         if sub == "/networks" and method == "POST":
@@ -78,6 +102,7 @@ class H(BaseHTTPRequestHandler):
     def do_GET(self): self.route("GET")
     def do_POST(self): self.route("POST")
     def do_PUT(self): self.route("PUT")
+    def do_DELETE(self): self.route("DELETE")
 
 if __name__ == "__main__":
     import os

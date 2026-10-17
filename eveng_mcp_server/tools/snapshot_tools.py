@@ -80,7 +80,8 @@ def register_snapshot_tools(mcp: "FastMCP", eveng_client: "EVENGClientWrapper") 
 
             async def wr(nid):
                 try:
-                    _, errs = await run_commands(host, console_port(int(nid), pod), ["write memory"], timeout=40)
+                    _, errs = await run_commands(host, console_port(int(nid), pod), ["write memory"],
+                                                 timeout=30, settle_seconds=15)
                     return "ok" if not errs else "; ".join(errs)
                 except ConsoleError as e:
                     return str(e)
@@ -97,13 +98,18 @@ def register_snapshot_tools(mcp: "FastMCP", eveng_client: "EVENGClientWrapper") 
             if ok_nodes:
                 # One SSH session; all exports run in parallel on EVE-NG (each one reads the
                 # node's config over its console, which takes several seconds).
-                parts = []
-                for nid, name in ok_nodes:
-                    c = build_command("export", pod, int(nid), arguments.lab_path, user)
-                    parts.append(f"( {c} >/dev/null 2>&1; echo \"RC {nid} $?\" ) &")
-                script = " ".join(parts) + " wait"
-                rc, out = await ssh_run(host, script, timeout=45)
-                codes = dict(re.findall(r"RC (\d+) (\d+)", out))
+                async def export(nodes):
+                    parts = []
+                    for nid, _ in nodes:
+                        c = build_command("export", pod, int(nid), arguments.lab_path, user)
+                        parts.append(f"( {c} >/dev/null 2>&1; echo \"RC {nid} $?\" ) &")
+                    _, out = await ssh_run(host, " ".join(parts) + " wait", timeout=30)
+                    return dict(re.findall(r"RC (\d+) (\d+)", out))
+                codes = await export(ok_nodes)
+                retry = [(n, nm) for n, nm in ok_nodes if codes.get(str(n)) != "0"]
+                if retry and loop.time() - t0 < 25:   # one retry if it fits under the ~50s budget
+                    await asyncio.sleep(3)
+                    codes.update(await export(retry))
                 for nid, name in ok_nodes:
                     code = codes.get(str(nid))
                     lines.append(f"✅ {name}: saved and exported" if code == "0"

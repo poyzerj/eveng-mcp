@@ -317,7 +317,7 @@ class StillBooting(ConsoleError):
 async def run_commands(host: str, port: int, commands: List[str], mode: str = "exec",
                        save: bool = False, timeout: float = 30, boot_wait: float = 40,
                        lock_wait: float = 15, allow_confirm: bool = False,
-                       capture_seconds: float = 0) -> Tuple[str, List[str]]:
+                       capture_seconds: float = 0, settle_seconds: float = 0) -> Tuple[str, List[str]]:
     """Run commands on one device. Returns (transcript, errors).
 
     - Waits up to lock_wait seconds if another job holds this device, then gives up.
@@ -396,6 +396,12 @@ async def run_commands(host: str, port: int, commands: List[str], mode: str = "e
                 transcript.append(f"{con.prompt} write memory\n{out}")
             elif save:
                 errors.append("Config was NOT saved because of the error above.")
+        if settle_seconds:
+            # Wait for late device output to finish (e.g. IOSv's %GRUB CONFIG_WRITING after
+            # write memory) so whoever uses the console next gets a clean line.
+            tail = con._keep(await con.drain(quiet=3.0, max_time=float(settle_seconds)))
+            if tail:
+                transcript.append(tail)
         if con.answered:
             transcript.append("Answered with permission: " + "; ".join(f'"{q}"' for q in con.answered))
         return "\n".join(transcript), errors

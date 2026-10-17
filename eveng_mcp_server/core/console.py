@@ -28,6 +28,8 @@ CTRL_C = "\x03"
 CTRL_SHIFT_6 = "\x1e"
 
 PROMPT_RE = re.compile(r"(?:^|[\r\n])([A-Za-z0-9_.\-]+(?:\([^)\r\n]*\))?[>#])\s*$")
+# A prompt immediately followed by syslog/debug lines (e.g. after `shutdown`).
+LOGGED_PROMPT_RE = re.compile(r"[\r\n]([A-Za-z0-9_.\-]+(?:\([^)\r\n]*\))?[>#])[ \t]*[\r\n]+[ \t]*(?:\*|%|[A-Z][a-z]{2} +\d+ \d\d:\d\d|\d+:\s)")
 ANY_PROMPT_RE = re.compile(r"[\r\n]([A-Za-z0-9_.\-]+(?:\([^)\r\n]*\))?[>#])[ \t]*[\r\n]")
 # Harmless boot/paging prompts: always answered.
 AUTO = [
@@ -50,6 +52,7 @@ UNDEBUG_RE = re.compile(r"^\s*(undebug|u|no debug)\s+all", re.I)
 RELOAD_RE = re.compile(r"^\s*(reload|reboot)\b", re.I)
 
 MAX_CAPTURE = 40
+BUDGET = 50.0   # seconds; the remote tool bridge gives up at ~60s
 
 
 def console_port(node_id: int, pod: int = 0) -> int:
@@ -210,7 +213,7 @@ class IOSConsole:
                     raise NeedsConfirmation(question, buf)
             if handled:
                 continue
-            m = PROMPT_RE.search(view)
+            m = PROMPT_RE.search(view) or LOGGED_PROMPT_RE.search(view)
             if not m and anywhere:
                 m = ANY_PROMPT_RE.search(view)
             if m:
@@ -319,6 +322,7 @@ async def run_commands(host: str, port: int, commands: List[str], mode: str = "e
     con = IOSConsole(host, port, timeout=timeout, allow_confirm=allow_confirm)
     transcript, errors = [], []
     debug_used = False
+    t0 = asyncio.get_running_loop().time()
     try:
         await con.open()
         try:
@@ -363,7 +367,10 @@ async def run_commands(host: str, port: int, commands: List[str], mode: str = "e
             if con.between:
                 transcript.append(con.between)
         if capture_seconds and not errors:
-            secs = min(float(capture_seconds), MAX_CAPTURE)
+            left = BUDGET - (asyncio.get_running_loop().time() - t0) - 4
+            secs = max(0.0, min(float(capture_seconds), MAX_CAPTURE, left))
+            if secs < float(capture_seconds):
+                errors.append(f"Capture shortened to {int(secs)}s to keep the call under ~{int(BUDGET)}s.")
             captured = await con.capture(secs)
             transcript.append(f"--- captured {int(secs)}s of output ---" + (f"\n{captured}" if captured else "\n(nothing printed)"))
         if debug_used:

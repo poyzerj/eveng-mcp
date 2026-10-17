@@ -1,3 +1,50 @@
+# EVE-NG MCP Server — poyzerj fork
+
+> **Credit:** This is a fork of [**moimran/eveng-mcp**](https://github.com/moimran/eveng-mcp) by **Mohammed Imran**.
+> All original design and code are his work, licensed under the MIT License as stated in his project.
+> This fork adds bug fixes and new tools found while using it against a real EVE-NG Community lab.
+> His original README follows below, unchanged.
+
+## What this fork changes
+
+**Fixes**
+- `connect_node_to_node` / `connect_node_to_network` now work: node and network IDs are translated to the names the SDK expects
+- Interface names are matched loosely (`Gi0/0`, `gi0/0`, `GigabitEthernet0/0`), and a bad name lists the real ones
+- Expired EVE-NG sessions (HTTP 412) log in again and retry automatically; tools connect on first use
+- `get_lab_topology` no longer crashes once a lab has links
+- `list_node_templates` handles the current EVE-NG response format
+- Node positions are pixels (EVE-NG's real unit), not percent
+
+**New tools**
+- `arrange_nodes` — lay a lab out as a row, column, or grid; `add_node` now auto-places nodes so they don't stack
+- `move_node` — put one node at a specific spot
+- `run_node_commands` — run show or config commands on running Cisco IOS/IOSv/IOSvL2 nodes over their EVE-NG console
+  - One job per device at a time; quick "still booting" reply; stops at the first rejected config line without saving
+  - Device questions (`[confirm]`, `[yes/no]` from reload, clear, copy...) are cancelled and reported unless `confirm=true`, which the assistant only sets after you approve
+  - `capture_seconds` collects debug output; `undebug all` always runs afterwards
+  - Long pings/traceroutes are stopped with Ctrl+Shift+6; log lines are kept in order
+- `power_nodes` / `node_power_status` — start, stop, or wipe nodes as the web UI user (POD 0 = admin) by running EVE-NG's `unl_wrapper` over SSH, so they show up in your browser and the console tool can reach them
+
+## Quick setup (Windows + Claude Desktop)
+
+1. In EVE-NG create a user for Claude: **Management → User management → Add user** (e.g. `claude`, Administrator).
+   A separate user matters: EVE-NG allows one login per user, so sharing `admin` logs you out of the web UI.
+2. Run in PowerShell:
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File .\scripts\setup-windows.ps1 -EveHost <eve-ng-ip>
+   ```
+   It installs Git/uv if needed, clones this fork to `C:\eveng-mcp`, finds EVE-NG, and writes the Claude Desktop config.
+3. Optional, for `power_nodes`: add `EVENG_SSH_USER` (e.g. `root`) and `EVENG_SSH_PASSWORD` to the
+   `eveng-mcp-server` env in the Claude Desktop config.
+4. Fully quit Claude Desktop (system tray → Quit) and reopen it.
+
+**Console notes:** `run_node_commands` reaches nodes started from the web UI by the `admin` user (EVE-NG POD 0).
+Set `EVENG_CONSOLE_POD` in the server's env to use another user's running nodes. Use `power_nodes` to start/stop
+nodes; the API's `start_node` runs them under the `claude` user as separate copies you won't see in the web UI. Add links before powering nodes on; EVE-NG Community
+doesn't attach new links to a running node.
+
+---
+
 # EVE-NG MCP Server
 
 A comprehensive Model Context Protocol (MCP) server for EVE-NG network emulation platform integration. This server exposes EVE-NG's full API capabilities through MCP's standardized interface, enabling LLMs to manage network topologies, labs, nodes, and configurations.

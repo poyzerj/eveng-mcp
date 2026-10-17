@@ -387,291 +387,50 @@ def register_node_tools(mcp: "FastMCP", eveng_client: "EVENGClientWrapper") -> N
                 text=f"Failed to get node details: {str(e)}"
             )]
 
+    # The REST API starts nodes for THIS server's own login (the 'claude' user), which
+    # boots hidden copies the web UI user can't see. These tools keep their names so
+    # existing prompts still work, but route to power_nodes (unl_wrapper over SSH, POD 0).
+    async def _power(lab_path: str, action: str, node_id: Optional[str] = None) -> list[TextContent]:
+        from .power_tools import do_power
+        from ..core.power import PowerError
+        try:
+            text = await do_power(eveng_client, lab_path, action, [node_id] if node_id else None)
+        except PowerError as e:
+            text = (f"Power error: {e}\n\nNot falling back to the REST API: it would start hidden "
+                    "copies under this server's own user that the web UI can't see.")
+        except Exception as e:
+            text = f"Failed to {action}: {e}"
+        return [TextContent(type="text", text=text)]
+
     @mcp.tool()
     async def start_node(arguments: NodeControlArgs) -> list[TextContent]:
-        """
-        Start a specific node.
-
-        This tool starts a node in the lab. The node must be in stopped state
-        to be started successfully.
-        """
-        try:
-            logger.info(f"Starting node {arguments.node_id} in {arguments.lab_path}")
-
-            try:
-
-                await eveng_client.ensure_connected()
-
-            except Exception:
-
-                pass
-
-            if not eveng_client.is_connected:
-                return [TextContent(
-                    type="text",
-                    text="Not connected to EVE-NG server. Use connect_eveng_server tool first."
-                )]
-
-            # Start node
-            result = await eveng_client.start_node(arguments.lab_path, arguments.node_id)
-
-            if result.get('status') == 'success':
-                return [TextContent(
-                    type="text",
-                    text=f"Successfully started node {arguments.node_id} in {arguments.lab_path}\n\n"
-                         f"The node is now booting up. It may take a few moments to become fully operational."
-                )]
-            else:
-                return [TextContent(
-                    type="text",
-                    text=f"Failed to start node: {result.get('message', 'Unknown error')}"
-                )]
-
-        except Exception as e:
-            logger.error(f"Failed to start node: {e}")
-            return [TextContent(
-                type="text",
-                text=f"Failed to start node: {str(e)}"
-            )]
+        """Start one node as the web UI user (same as power_nodes action=start)."""
+        return await _power(arguments.lab_path, "start", arguments.node_id)
 
     @mcp.tool()
     async def stop_node(arguments: NodeControlArgs) -> list[TextContent]:
-        """
-        Stop a specific node.
-
-        This tool stops a running node in the lab. The node will be gracefully
-        shut down and its state will be preserved.
-        """
-        try:
-            logger.info(f"Stopping node {arguments.node_id} in {arguments.lab_path}")
-
-            try:
-
-                await eveng_client.ensure_connected()
-
-            except Exception:
-
-                pass
-
-            if not eveng_client.is_connected:
-                return [TextContent(
-                    type="text",
-                    text="Not connected to EVE-NG server. Use connect_eveng_server tool first."
-                )]
-
-            # Stop node
-            result = await eveng_client.stop_node(arguments.lab_path, arguments.node_id)
-
-            if result.get('status') == 'success':
-                return [TextContent(
-                    type="text",
-                    text=f"Successfully stopped node {arguments.node_id} in {arguments.lab_path}\n\n"
-                         f"The node has been shut down and its state has been preserved."
-                )]
-            else:
-                return [TextContent(
-                    type="text",
-                    text=f"Failed to stop node: {result.get('message', 'Unknown error')}"
-                )]
-
-        except Exception as e:
-            logger.error(f"Failed to stop node: {e}")
-            return [TextContent(
-                type="text",
-                text=f"Failed to stop node: {str(e)}"
-            )]
+        """Stop one node as the web UI user (same as power_nodes action=stop)."""
+        return await _power(arguments.lab_path, "stop", arguments.node_id)
 
     @mcp.tool()
     async def start_all_nodes(arguments: BulkNodeControlArgs) -> list[TextContent]:
-        """
-        Start all nodes in a lab.
-
-        This tool starts all nodes in the specified lab. Nodes will be started
-        according to their configured delay settings.
-        """
-        try:
-            logger.info(f"Starting all nodes in {arguments.lab_path}")
-
-            try:
-
-                await eveng_client.ensure_connected()
-
-            except Exception:
-
-                pass
-
-            if not eveng_client.is_connected:
-                return [TextContent(
-                    type="text",
-                    text="Not connected to EVE-NG server. Use connect_eveng_server tool first."
-                )]
-
-            # Start all nodes
-            result = await eveng_client.start_all_nodes(arguments.lab_path)
-
-            if result.get('status') == 'success':
-                return [TextContent(
-                    type="text",
-                    text=f"Successfully started all nodes in {arguments.lab_path}\n\n"
-                         f"All nodes are now booting up. They may take a few moments to become fully operational."
-                )]
-            else:
-                return [TextContent(
-                    type="text",
-                    text=f"Failed to start all nodes: {result.get('message', 'Unknown error')}"
-                )]
-
-        except Exception as e:
-            logger.error(f"Failed to start all nodes: {e}")
-            return [TextContent(
-                type="text",
-                text=f"Failed to start all nodes: {str(e)}"
-            )]
+        """Start every node in the lab as the web UI user (same as power_nodes action=start)."""
+        return await _power(arguments.lab_path, "start")
 
     @mcp.tool()
     async def stop_all_nodes(arguments: BulkNodeControlArgs) -> list[TextContent]:
-        """
-        Stop all nodes in a lab.
-
-        This tool stops all running nodes in the specified lab. All nodes
-        will be gracefully shut down and their states preserved.
-        """
-        try:
-            logger.info(f"Stopping all nodes in {arguments.lab_path}")
-
-            try:
-
-                await eveng_client.ensure_connected()
-
-            except Exception:
-
-                pass
-
-            if not eveng_client.is_connected:
-                return [TextContent(
-                    type="text",
-                    text="Not connected to EVE-NG server. Use connect_eveng_server tool first."
-                )]
-
-            # Stop all nodes
-            result = await eveng_client.stop_all_nodes(arguments.lab_path)
-
-            if result.get('status') == 'success':
-                return [TextContent(
-                    type="text",
-                    text=f"Successfully stopped all nodes in {arguments.lab_path}\n\n"
-                         f"All nodes have been shut down and their states preserved."
-                )]
-            else:
-                return [TextContent(
-                    type="text",
-                    text=f"Failed to stop all nodes: {result.get('message', 'Unknown error')}"
-                )]
-
-        except Exception as e:
-            logger.error(f"Failed to stop all nodes: {e}")
-            return [TextContent(
-                type="text",
-                text=f"Failed to stop all nodes: {str(e)}"
-            )]
+        """Stop every node in the lab as the web UI user (same as power_nodes action=stop)."""
+        return await _power(arguments.lab_path, "stop")
 
     @mcp.tool()
     async def wipe_node(arguments: NodeControlArgs) -> list[TextContent]:
-        """
-        Wipe a specific node (reset to factory state).
-
-        This tool wipes a node, deleting all user configuration including
-        startup-config, VLANs, and other settings. The next start will
-        rebuild the node from the selected image.
-        """
-        try:
-            logger.info(f"Wiping node {arguments.node_id} in {arguments.lab_path}")
-
-            try:
-
-                await eveng_client.ensure_connected()
-
-            except Exception:
-
-                pass
-
-            if not eveng_client.is_connected:
-                return [TextContent(
-                    type="text",
-                    text="Not connected to EVE-NG server. Use connect_eveng_server tool first."
-                )]
-
-            # Wipe node
-            result = await eveng_client.wipe_node(arguments.lab_path, arguments.node_id)
-
-            if result.get('status') == 'success':
-                return [TextContent(
-                    type="text",
-                    text=f"Successfully wiped node {arguments.node_id} in {arguments.lab_path}\n\n"
-                         f"⚠️  All user configuration has been deleted. The node has been reset to factory state.\n"
-                         f"The next start will rebuild the node from the selected image."
-                )]
-            else:
-                return [TextContent(
-                    type="text",
-                    text=f"Failed to wipe node: {result.get('message', 'Unknown error')}"
-                )]
-
-        except Exception as e:
-            logger.error(f"Failed to wipe node: {e}")
-            return [TextContent(
-                type="text",
-                text=f"Failed to wipe node: {str(e)}"
-            )]
+        """Wipe one STOPPED node back to its lab startup config (same as power_nodes action=wipe)."""
+        return await _power(arguments.lab_path, "wipe", arguments.node_id)
 
     @mcp.tool()
     async def wipe_all_nodes(arguments: BulkNodeControlArgs) -> list[TextContent]:
-        """
-        Wipe all nodes in a lab (reset to factory state).
-
-        This tool wipes all nodes in the lab, deleting all user configuration
-        including startup-configs, VLANs, and other settings. The next start
-        will rebuild all nodes from their selected images.
-        """
-        try:
-            logger.info(f"Wiping all nodes in {arguments.lab_path}")
-
-            try:
-
-                await eveng_client.ensure_connected()
-
-            except Exception:
-
-                pass
-
-            if not eveng_client.is_connected:
-                return [TextContent(
-                    type="text",
-                    text="Not connected to EVE-NG server. Use connect_eveng_server tool first."
-                )]
-
-            # Wipe all nodes
-            result = await eveng_client.wipe_all_nodes(arguments.lab_path)
-
-            if result.get('status') == 'success':
-                return [TextContent(
-                    type="text",
-                    text=f"Successfully wiped all nodes in {arguments.lab_path}\n\n"
-                         f"⚠️  All user configurations have been deleted. All nodes have been reset to factory state.\n"
-                         f"The next start will rebuild all nodes from their selected images."
-                )]
-            else:
-                return [TextContent(
-                    type="text",
-                    text=f"Failed to wipe all nodes: {result.get('message', 'Unknown error')}"
-                )]
-
-        except Exception as e:
-            logger.error(f"Failed to wipe all nodes: {e}")
-            return [TextContent(
-                type="text",
-                text=f"Failed to wipe all nodes: {str(e)}"
-            )]
+        """Wipe every STOPPED node back to its lab startup config (same as power_nodes action=wipe)."""
+        return await _power(arguments.lab_path, "wipe")
 
     @mcp.tool()
     async def delete_node(arguments: DeleteNodeArgs) -> list[TextContent]:

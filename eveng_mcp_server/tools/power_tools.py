@@ -33,15 +33,46 @@ class NodeStatusArgs(BaseModel):
     pod: Optional[int] = Field(default=None, description="EVE-NG POD to check. Default: EVENG_CONSOLE_POD env, else 0 (admin)")
 
 
-def register_power_tools(mcp: "FastMCP", eveng_client: "EVENGClientWrapper") -> None:
+async def _resolve_nodes(eveng_client, lab_path: str, refs: Optional[List[str]]):
+    await eveng_client.ensure_connected()
+    if refs:
+        return [await asyncio.to_thread(eveng_client._node_name, lab_path, r) for r in refs]
+    nodes = (await eveng_client.list_nodes(lab_path)).get("data") or {}
+    items = [(str(n.get("id", k)), n.get("name", str(k))) for k, n in nodes.items()]
+    return sorted(items, key=lambda x: int(x[0]))
 
-    async def _resolve(lab_path: str, refs: Optional[List[str]]):
-        await eveng_client.ensure_connected()
-        if refs:
-            return [await asyncio.to_thread(eveng_client._node_name, lab_path, r) for r in refs]
-        nodes = (await eveng_client.list_nodes(lab_path)).get("data") or {}
-        items = [(str(n.get("id", k)), n.get("name", str(k))) for k, n in nodes.items()]
-        return sorted(items, key=lambda x: int(x[0]))
+
+async def do_power(eveng_client, lab_path: str, action: str,
+                   nodes: Optional[List[str]] = None, pod: Optional[int] = None) -> str:
+    """Start/stop/wipe nodes for a POD via unl_wrapper over SSH. Returns a report."""
+    action = action.lower().strip()
+    pod = _pod(pod)
+    host = eveng_client.config.eveng.host
+    user = ssh_settings()["user"]
+    targets = await _resolve_nodes(eveng_client, lab_path, nodes)
+    if not targets:
+        return "No nodes found in that lab."
+    lines = []
+    for nid, name in targets:
+        cmd = build_command(action, pod, int(nid), lab_path, user)
+        rc, out = await ssh_run(host, cmd)
+        if action in ("start", "stop"):
+            ok = await wait_state(host, int(nid), pod, want_running=(action == "start"))
+            state = ("running" if action == "start" else "stopped") if ok else "NOT confirmed"
+        else:
+            ok, state = rc == 0, ("done" if rc == 0 else "failed")
+        line = f"{'✅' if ok else '⚠️'} {name} (ID {nid}): {action} -> {state}"
+        if not ok or rc != 0:
+            line += f"\n     exit {rc}: {out[-400:] or '(no output)'}"
+        lines.append(line)
+        if action == "start" and len(targets) > 1:
+            await asyncio.sleep(1)  # small stagger, like the web UI
+    tail = ("\n\nDevices take 1-3 minutes to boot. run_node_commands will say if one is still booting."
+            if action == "start" else "")
+    return f"POD {pod} - {lab_path}\n" + "\n".join(lines) + tail
+
+
+def register_power_tools(mcp: "FastMCP", eveng_client: "EVENGClientWrapper") -> None:
 
     @mcp.tool()
     async def power_nodes(arguments: PowerNodesArgs) -> list[TextContent]:
@@ -55,31 +86,9 @@ def register_power_tools(mcp: "FastMCP", eveng_client: "EVENGClientWrapper") -> 
         After 'start', devices still need 1-3 minutes to boot before CLI works.
         """
         try:
-            action = arguments.action.lower().strip()
-            pod = _pod(arguments.pod)
-            host = eveng_client.config.eveng.host
-            user = ssh_settings()["user"]
-            targets = await _resolve(arguments.lab_path, arguments.nodes)
-            if not targets:
-                return [TextContent(type="text", text="No nodes found in that lab.")]
-            lines = []
-            for nid, name in targets:
-                cmd = build_command(action, pod, int(nid), arguments.lab_path, user)
-                rc, out = await ssh_run(host, cmd)
-                if action in ("start", "stop"):
-                    ok = await wait_state(host, int(nid), pod, want_running=(action == "start"))
-                    state = ("running" if action == "start" else "stopped") if ok else "NOT confirmed"
-                else:
-                    ok, state = rc == 0, ("wiped" if rc == 0 else "failed")
-                mark = "✅" if ok else "⚠️"
-                line = f"{mark} {name} (ID {nid}): {action} -> {state}"
-                if not ok or rc != 0:
-                    line += f"\n     exit {rc}: {out[-400:] or '(no output)'}"
-                lines.append(line)
-                if action == "start" and len(targets) > 1:
-                    await asyncio.sleep(1)  # small stagger, like the web UI
-            tail = "\n\nDevices take 1-3 minutes to boot. run_node_commands will say if one is still booting." if action == "start" else ""
-            return [TextContent(type="text", text=f"POD {pod} - {arguments.lab_path}\n" + "\n".join(lines) + tail)]
+            text = await do_power(eveng_client, arguments.lab_path, arguments.action,
+                                  arguments.nodes, arguments.pod)
+            return [TextContent(type="text", text=text)]
         except PowerError as e:
             return [TextContent(type="text", text=f"Power error: {e}")]
         except Exception as e:
@@ -96,7 +105,7 @@ def register_power_tools(mcp: "FastMCP", eveng_client: "EVENGClientWrapper") -> 
         try:
             pod = _pod(arguments.pod)
             host = eveng_client.config.eveng.host
-            targets = await _resolve(arguments.lab_path, None)
+            targets = await _resolve_nodes(eveng_client, arguments.lab_path, None)
             states = await asyncio.gather(*(is_running(host, int(n), pod) for n, _ in targets))
             lines = [f"{'🟢 running' if up else '⚪ stopped'}  {name} (ID {nid})" for (nid, name), up in zip(targets, states)]
             return [TextContent(type="text", text=f"POD {pod} - {arguments.lab_path}\n" + "\n".join(lines))]

@@ -61,6 +61,29 @@ class GetTopologyArgs(BaseModel):
 def register_network_tools(mcp: "FastMCP", eveng_client: "EVENGClientWrapper") -> None:
     """Register network management tools."""
 
+    async def _running_warning(lab_path: str, node_refs: List[str]) -> str:
+        """EVE-NG Community only plugs a node into new links when the node starts.
+        Warn if any endpoint is already running (checked by its console port)."""
+        import asyncio, os
+        from ..core.power import is_running
+        try:
+            pod = int(os.environ.get("EVENG_CONSOLE_POD", "0"))
+            host = eveng_client.config.eveng.host
+            running = []
+            for ref in node_refs:
+                nid, name = await asyncio.to_thread(eveng_client._node_name, lab_path, ref)
+                if await is_running(host, int(nid), pod):
+                    running.append(name)
+            if running:
+                names = ", ".join(running)
+                return (f"\n\n⚠️ {names} {'is' if len(running) == 1 else 'are'} already running. EVE-NG Community "
+                        f"only attaches new links when a node starts, so this link won't pass traffic until "
+                        f"{names} {'is' if len(running) == 1 else 'are'} restarted. Save the config first "
+                        "(write memory), then power_nodes stop + start.")
+        except Exception:
+            pass
+        return ""
+
     @mcp.tool()
     async def list_network_types(arguments: ListNetworksArgs) -> list[TextContent]:
         """
@@ -323,6 +346,7 @@ def register_network_tools(mcp: "FastMCP", eveng_client: "EVENGClientWrapper") -
                          f"Interface: {arguments.node_interface}\n"
                          f"Network: {arguments.network_id}\n\n"
                          f"Connection established successfully."
+                         + await _running_warning(arguments.lab_path, [arguments.node_id])
                 )]
             else:
                 return [TextContent(
@@ -379,6 +403,7 @@ def register_network_tools(mcp: "FastMCP", eveng_client: "EVENGClientWrapper") -
                          f"Source Node: {arguments.src_node_id} ({arguments.src_interface})\n"
                          f"Destination Node: {arguments.dst_node_id} ({arguments.dst_interface})\n\n"
                          f"Point-to-point connection established successfully."
+                         + await _running_warning(arguments.lab_path, [arguments.src_node_id, arguments.dst_node_id])
                 )]
             else:
                 return [TextContent(

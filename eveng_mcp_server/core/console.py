@@ -285,8 +285,20 @@ class IOSConsole:
             except ConsoleTimeout:
                 await self.send(CTRL_SHIFT_6 * 2 + "\r")
                 raw = e.buf + await self.read_until_prompt(timeout=6)
+            self._keep_before_echo(raw, cmd)
             return self._clean(raw, cmd) + f"\n[stopped with Ctrl+Shift+6 after {int(t)}s]"
+        self._keep_before_echo(raw, cmd)
         return self._clean(raw, cmd)
+
+    def _keep_before_echo(self, raw: str, cmd: str):
+        """Log lines that landed after the drain but before this command's echo
+        belong to the previous step - keep them instead of dropping them."""
+        c = cmd.strip()
+        i = raw.find(c) if c else -1
+        if i > 0:
+            pre = self._keep(raw[:i])
+            if pre:
+                self.between = (self.between + "\n" + pre).strip("\n")
 
 
 # One job per device at a time. Two sessions typing into the same console

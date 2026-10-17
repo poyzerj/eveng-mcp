@@ -26,6 +26,8 @@ class RunCommandsArgs(BaseModel):
     timeout: int = Field(default=30, description="Seconds to wait for each command's output (raise for long pings/traceroutes)")
     boot_wait: int = Field(default=40, description="Seconds to wait for a CLI prompt. If the device is still booting the tool returns quickly so you can retry; keep under ~45s.")
     pod: Optional[int] = Field(default=None, description="EVE-NG POD whose running copy to use. Default: EVENG_CONSOLE_POD env, else 0 (admin)")
+    confirm: bool = Field(default=False, description="Answer device questions ([confirm], [yes/no], filename prompts) with their default/yes. ONLY set true after the user has explicitly approved answering the specific question the tool reported. Never set it pre-emptively.")
+    capture_seconds: int = Field(default=0, description="After the commands, keep collecting device output for this many seconds (max 40), e.g. to watch debug output. 'undebug all' always runs afterwards if any debug was used.")
 
 
 def register_console_tools(mcp: "FastMCP", eveng_client: "EVENGClientWrapper") -> None:
@@ -41,6 +43,13 @@ def register_console_tools(mcp: "FastMCP", eveng_client: "EVENGClientWrapper") -
         answered automatically. If a device is still booting the tool says so without
         sending anything - wait a minute and retry. Only one job runs per device at a
         time. In config mode the tool stops at the first rejected line and does not save.
+
+        Device questions ([confirm], [yes/no], e.g. from reload, clear, copy, delete) are
+        cancelled and reported unless confirm=true. When the tool reports NEEDS
+        CONFIRMATION, show the user the exact question and ask; re-run with confirm=true
+        only if they say yes. For debug: send the debug command(s) and set
+        capture_seconds; 'undebug all' runs automatically. Long pings/traceroutes are
+        stopped with Ctrl+Shift+6 after `timeout` seconds. Keep each call under ~50s total.
         Works on nodes started from the EVE-NG web UI by the
         POD in EVENG_CONSOLE_POD (default 0 = admin).
         Run several nodes in parallel by calling this tool once per node.
@@ -54,7 +63,8 @@ def register_console_tools(mcp: "FastMCP", eveng_client: "EVENGClientWrapper") -
             mode = "config" if arguments.mode.lower().startswith("conf") else "exec"
             transcript, errors = await run_commands(
                 host, port, arguments.commands, mode=mode, save=arguments.save,
-                timeout=arguments.timeout, boot_wait=arguments.boot_wait)
+                timeout=arguments.timeout, boot_wait=arguments.boot_wait,
+                allow_confirm=arguments.confirm, capture_seconds=arguments.capture_seconds)
             head = f"{node_name} (console {host}:{port}, {mode} mode)\n"
             if errors:
                 head += "⚠️ Errors:\n" + "\n".join(f"   {e}" for e in errors) + "\n"

@@ -1,6 +1,6 @@
 """Fake EVE-NG SSH server: accepts root/toor, runs only a fake unl_wrapper that
 opens/closes the node's console port (32768+128*T+D) on 127.0.0.1."""
-import asyncio, asyncssh, shlex, sys
+import asyncio, asyncssh, re, shlex, sys
 LISTENERS = {}
 LOG = []
 async def fake_console(r, w):
@@ -28,12 +28,21 @@ class Srv(asyncssh.SSHServer):
         if not (u == "root" and path and os.path.exists(path)): return False
         return any(asyncssh.import_public_key(l) == key for l in open(path) if l.strip())
 async def handle(proc):
-    argv = shlex.split(proc.command or "")
-    print("CMD", proc.command, flush=True)
-    if argv and argv[0] == "/opt/unetlab/wrappers/unl_wrapper":
-        rc, out = await wrapper(argv)
+    cmd = proc.command or ""
+    print("CMD", cmd, flush=True)
+    if cmd.startswith("( "):
+        # parallel form used by save_lab_configs: ( <wrapper ...> >/dev/null 2>&1; echo "RC <id> $?" ) & ... wait
+        out, rc = "", 0
+        for part in re.findall(r"\( (.+?) >/dev/null 2>&1; echo \"RC (\d+) \$\?\" \)", cmd):
+            argv = shlex.split(part[0])
+            r, _ = await wrapper(argv) if argv and argv[0] == "/opt/unetlab/wrappers/unl_wrapper" else (127, "")
+            out += f"RC {part[1]} {r}\n"
     else:
-        rc, out = 127, "not allowed\n"
+        argv = shlex.split(cmd)
+        if argv and argv[0] == "/opt/unetlab/wrappers/unl_wrapper":
+            rc, out = await wrapper(argv)
+        else:
+            rc, out = 127, "not allowed\n"
     proc.stdout.write(out); proc.exit(rc)
 async def main():
     key = asyncssh.generate_private_key("ssh-ed25519")

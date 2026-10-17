@@ -71,6 +71,8 @@ def register_snapshot_tools(mcp: "FastMCP", eveng_client: "EVENGClientWrapper") 
         Runs `write memory` on each node (in parallel), then EVE-NG's export over SSH.
         """
         try:
+            loop = asyncio.get_running_loop()
+            t0 = loop.time()
             pod = _pod(arguments.pod)
             host, up, down = await _running(arguments.lab_path, arguments.nodes, pod)
             if not up:
@@ -84,15 +86,29 @@ def register_snapshot_tools(mcp: "FastMCP", eveng_client: "EVENGClientWrapper") 
                     return str(e)
             saved = await asyncio.gather(*(wr(n) for n, _ in up))
 
+            t_saved = loop.time()
             user = ssh_settings()["user"]
-            lines = []
+            lines, ok_nodes = [], []
             for (nid, name), w in zip(up, saved):
-                if w != "ok":
+                if w == "ok":
+                    ok_nodes.append((nid, name))
+                else:
                     lines.append(f"⚠️ {name}: write memory failed ({w}); not exported")
-                    continue
-                rc, out = await ssh_run(host, build_command("export", pod, int(nid), arguments.lab_path, user))
-                lines.append(f"✅ {name}: saved and exported" if rc == 0
-                             else f"⚠️ {name}: saved on the device, export failed (exit {rc}): {out[-300:] or '(no output)'}")
+            if ok_nodes:
+                # One SSH session; all exports run in parallel on EVE-NG (each one reads the
+                # node's config over its console, which takes several seconds).
+                parts = []
+                for nid, name in ok_nodes:
+                    c = build_command("export", pod, int(nid), arguments.lab_path, user)
+                    parts.append(f"( {c} >/dev/null 2>&1; echo \"RC {nid} $?\" ) &")
+                script = " ".join(parts) + " wait"
+                rc, out = await ssh_run(host, script, timeout=45)
+                codes = dict(re.findall(r"RC (\d+) (\d+)", out))
+                for nid, name in ok_nodes:
+                    code = codes.get(str(nid))
+                    lines.append(f"✅ {name}: saved and exported" if code == "0"
+                                 else f"⚠️ {name}: saved on the device, export {'exit ' + code if code else 'gave no result'}")
+            lines.append(f"(write memory {t_saved - t0:.0f}s, export {loop.time() - t_saved:.0f}s)")
             if down:
                 lines.append("Skipped (not running): " + ", ".join(n for _, n in down))
             return [TextContent(type="text", text=f"{arguments.lab_path}\n" + "\n".join(lines))]

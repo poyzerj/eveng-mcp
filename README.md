@@ -51,6 +51,17 @@ Set `EVENG_CONSOLE_POD` in the server's env to use another user's running nodes.
 nodes; the API's `start_node` runs them under the `claude` user as separate copies you won't see in the web UI. Add links before powering nodes on; EVE-NG Community
 doesn't attach new links to a running node.
 
+## Tests for this fork
+
+Fake EVE-NG, IOS console and SSH servers run locally, so no lab is needed:
+```powershell
+uv run --extra dev pytest fork_tests -o addopts=""
+```
+They cover every bug fixed here: link IDs and interface names, session re-login, the console
+answering `[confirm]` without permission, out-of-sync prompts, debug capture/undebug, long pings,
+log lines after `shutdown`, one job per device, still-booting replies, SSH key/host-key checks,
+and wrapper command validation. (Upstream's `tests/` folder needs a live EVE-NG server.)
+
 ---
 
 # EVE-NG MCP Server

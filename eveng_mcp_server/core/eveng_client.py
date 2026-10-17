@@ -668,6 +668,24 @@ class EVENGClientWrapper(LoggerMixin):
             self.logger.error("Failed to connect nodes", **log_error(e, {"lab_path": lab_path, "src": src, "dst": dst}))
             raise EVENGAPIError(f"Failed to connect nodes: {str(e)}")
 
+    async def set_startup_config(self, lab_path: str, node_id: str, config: str) -> int:
+        """Store `config` as the node's startup-config in the lab file, enable
+        'boot from config', and return the stored length (read back to verify)."""
+        await self.ensure_connected()
+
+        def _do():
+            self.api.upload_node_config(lab_path, str(node_id), config)
+            self.api.enable_node_config(lab_path, str(node_id))
+            stored = self.api.get_node_config_by_id(lab_path, int(node_id)) or {}
+            data = stored.get("data")
+            if isinstance(data, dict):
+                data = data.get("data", "")
+            return len(data or "")
+        try:
+            return await asyncio.to_thread(_do)
+        except Exception as e:
+            raise EVENGAPIError(f"Failed to store startup-config for node {node_id}: {str(e)}")
+
     async def move_node(self, lab_path: str, node_id: str, left: int, top: int) -> Dict[str, Any]:
         """Set a node's position on the lab canvas (pixels)."""
         await self.ensure_connected()

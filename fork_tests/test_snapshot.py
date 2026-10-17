@@ -19,44 +19,27 @@ def _call(tool, **args):
     return content[0].text
 
 
-import pytest
-
-
-def _fake_export_env(monkeypatch, tmp_path, seconds):
-    monkeypatch.setenv("FAKE_WRAPPER_LOG", str(tmp_path / "wrapper.log"))
-    monkeypatch.setenv("FAKE_EXPORT_SECONDS", str(seconds))
-    monkeypatch.setenv("EVENG_EXPORT_LOG_DIR", str(tmp_path))
-    return tmp_path / "wrapper.log"
-
-
-@pytest.fixture
-def quick_export(monkeypatch, tmp_path):   # request BEFORE ssh_env so the fake inherits it
-    return _fake_export_env(monkeypatch, tmp_path, 1)
-
-
-@pytest.fixture
-def slow_export(monkeypatch, tmp_path):
-    return _fake_export_env(monkeypatch, tmp_path, 60)
-
-
-def test_save_exports_one_at_a_time_in_background_job(eve_env, fake_ios2, quick_export, ssh_env):
+def test_save_stores_config_in_lab_and_enables_it(eve_env, fake_ios2):
+    from eveng_mcp_server.core.eveng_client import EVENGClientWrapper
     start = time.time()
     text = _call("save_lab_configs")
-    assert "✅ R1: saved and exported" in text
+    assert "✅ R1: saved and stored in the lab" in text
     assert "Skipped (not running): R2, R3" in text
-    assert time.time() - start < 30
-    assert quick_export.read_text().split()[:6] == ["-a", "export", "-T", "3", "-D", "1"]
-    status = _call("export_status")
-    assert "R1: export ok" in status and "Finished." in status
+    assert time.time() - start < 20
+    c = EVENGClientWrapper()
+    asyncio.run(c.connect())
+    stored = c.api.get_node_config_by_id(LAB, 1)["data"]["data"]
+    assert stored.startswith("!\nhostname R1") and stored.rstrip().endswith("end")
+    assert "GRUB" not in stored                  # interleaved log line filtered out
+    assert c.api.list_nodes(LAB)["data"]["1"]["config"] == 1   # boot from config enabled
 
 
-def test_slow_export_returns_in_time_and_keeps_going(eve_env, fake_ios2, slow_export, ssh_env):
-    start = time.time()
-    text = _call("save_lab_configs")
-    assert time.time() - start < 55            # never runs into the ~60s remote limit
-    assert "⏳ R1: saved; export still running in the background" in text
-    assert "export_status" in text
-    assert "Still running" in _call("export_status")
+def test_running_config_parser():
+    from eveng_mcp_server.tools.snapshot_tools import running_config_from_transcript
+    t = ("R1# write memory\nBuilding configuration...\n[OK]\nR1# show running-config\n"
+         "Building configuration...\n\nCurrent configuration : 99 bytes\n!\nversion 15.9\n"
+         "*Oct 17 21:00:52.834: %GRUB-5-CONFIG_WRITTEN: GRUB configuration was written\nhostname R1\n!\nend\n")
+    assert running_config_from_transcript(t) == "!\nversion 15.9\nhostname R1\n!\nend\n"
 
 
 def test_backup_writes_files(eve_env, fake_ios2, monkeypatch, tmp_path):

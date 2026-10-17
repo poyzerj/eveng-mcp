@@ -61,8 +61,16 @@ class H(BaseHTTPRequestHandler):
             return self.send(201, {"code": 201, "status": "success", "data": {"id": nid}})
         mn = re.match(r"/nodes/(\d+)$", sub)
         if mn and method == "PUT":
-            b=self.body(); LAB["nodes"][mn.group(1)].update(left=b["left"], top=b["top"]); print("MOVED", mn.group(1), b, flush=True)
+            b = self.body(); b.pop("id", None)
+            LAB["nodes"][mn.group(1)].update(b); print("NODE", mn.group(1), b, flush=True)
             return self.send(201, {"code": 201, "status": "success", "message": "Lab has been saved (60023)."})
+        mc = re.match(r"/configs/(\d+)$", sub)
+        if mc and method == "PUT":
+            b = self.body(); LAB.setdefault("configs", {})[mc.group(1)] = b["data"]
+            return self.send(201, {"code": 201, "status": "success", "message": "Lab has been saved (60023)."})
+        if mc and method == "GET":
+            return self.send(200, {"code": 200, "status": "success",
+                                   "data": {"id": int(mc.group(1)), "data": LAB.get("configs", {}).get(mc.group(1), "")}})
         mm = re.match(r"/networks/(\d+)$", sub)
         if mm and method == "PUT":
             self.body(); return self.send(201, {"code": 201, "status": "success", "message": "saved"})

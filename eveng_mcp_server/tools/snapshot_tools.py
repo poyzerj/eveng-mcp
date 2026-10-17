@@ -1,8 +1,10 @@
 """Lab snapshot tools: save, back up, and reset whole-lab device configs.
 
-- save_lab_configs:   `write memory` on every running node, then export the
-                      configs into the lab file (unl_wrapper -a export) so the
-                      lab boots preconfigured - like EVE-NG's "Export all CFGs".
+- save_lab_configs:   `write memory` + `show running-config` on every running
+                      node, then store each config in the lab file through the
+                      EVE-NG API (startup-config + "boot from config"), so the
+                      lab boots preconfigured. Avoids EVE-NG's console-scraping
+                      export script, whose 15s timeout fails on longer IOSv configs.
 - backup_lab_configs: `show running-config` from every running node into dated
                       files on this PC (versioned history you can diff).
 - reset_lab:          stop -> wipe -> start, so nodes boot from the lab's
@@ -14,7 +16,6 @@ import asyncio
 import datetime as dt
 import os
 import re
-import shlex
 from typing import List, Optional, TYPE_CHECKING
 
 from mcp.types import TextContent
@@ -26,7 +27,7 @@ if TYPE_CHECKING:
 
 from ..config import get_logger
 from ..core.console import ConsoleError, console_port, run_commands
-from ..core.power import PowerError, build_command, is_running, ssh_run, ssh_settings
+from ..core.power import PowerError, is_running
 from .power_tools import _pod, _resolve_nodes, do_power
 
 logger = get_logger("SnapshotTools")
@@ -40,18 +41,21 @@ def _safe(name: str) -> str:
     return re.sub(r"[^A-Za-z0-9._ -]+", "_", name).strip() or "lab"
 
 
-def _export_log(lab_path: str, pod: int) -> str:
-    base = re.sub(r"[^A-Za-z0-9_-]+", "_", os.path.splitext(os.path.basename(lab_path))[0])
-    folder = os.environ.get("EVENG_EXPORT_LOG_DIR", "/tmp").rstrip("/")
-    return f"{folder}/eveng-mcp-export-{base}-pod{int(pod)}.log"
-
-
-async def _read_export_log(host: str, log: str):
-    """Returns (codes, done, exists) for the background export job's log."""
-    _, out = await ssh_run(host, f"cat {log} 2>/dev/null || echo NO_EXPORT_LOG", timeout=15)
-    if "NO_EXPORT_LOG" in out:
-        return {}, False, False
-    return dict(re.findall(r"RC (\d+) (\d+)", out)), "DONE" in out, True
+def running_config_from_transcript(t: str) -> str:
+    """Pull the config body out of a `show running-config` transcript:
+    from the first line after 'Current configuration' through the final 'end'."""
+    m = re.search(r"show running-config\n(.*)", t, re.S)
+    body = m.group(1) if m else t
+    lines = body.split("\n")
+    for i, l in enumerate(lines):
+        if l.startswith("Current configuration"):
+            lines = lines[i + 1:]
+            break
+    # drop syslog lines that can interleave (e.g. %GRUB right after write memory)
+    lines = [l for l in lines if not re.match(r"^\*?[A-Z][a-z]{2} +\d+ \d\d:\d\d:\d\d", l)]
+    while lines and lines[-1].strip() != "end":
+        lines.pop()
+    return "\n".join(lines).strip("\n") + "\n" if lines else ""
 
 
 class LabNodesArgs(BaseModel):
@@ -81,9 +85,10 @@ def register_snapshot_tools(mcp: "FastMCP", eveng_client: "EVENGClientWrapper") 
     @mcp.tool()
     async def save_lab_configs(arguments: LabNodesArgs) -> list[TextContent]:
         """
-        Save every running node's config and export it into the lab file, so the
-        lab boots with these configs next time (and reset_lab returns to them).
-        Runs `write memory` on each node (in parallel), then EVE-NG's export over SSH.
+        Save every running node's config and store it in the lab file as its
+        startup-config, so the lab boots with these configs (and reset_lab returns
+        to them). Per node, in parallel: `write memory` + `show running-config` over
+        the console, then upload through the EVE-NG API and read it back to verify.
         """
         try:
             loop = asyncio.get_running_loop()
@@ -93,83 +98,33 @@ def register_snapshot_tools(mcp: "FastMCP", eveng_client: "EVENGClientWrapper") 
             if not up:
                 return [TextContent(type="text", text="No running nodes to save.")]
 
-            async def wr(nid):
+            async def one(nid, name):
                 try:
-                    _, errs = await run_commands(host, console_port(int(nid), pod), ["write memory"],
-                                                 timeout=30, settle_seconds=15)
-                    return "ok" if not errs else "; ".join(errs)
+                    t, errs = await run_commands(host, console_port(int(nid), pod),
+                                                 ["write memory", "show running-config"], timeout=30)
                 except ConsoleError as e:
-                    return str(e)
-            saved = await asyncio.gather(*(wr(n) for n, _ in up))
+                    return f"⚠️ {name}: {e}"
+                if errs:
+                    return f"⚠️ {name}: {'; '.join(errs)}"
+                cfg = running_config_from_transcript(t)
+                if not cfg:
+                    return f"⚠️ {name}: saved on the device, but couldn't read its running-config"
+                try:
+                    stored = await eveng_client.set_startup_config(arguments.lab_path, nid, cfg)
+                except Exception as e:
+                    return f"⚠️ {name}: saved on the device, lab upload failed: {e}"
+                if stored < len(cfg) * 0.9:
+                    return f"⚠️ {name}: uploaded, but the lab returned {stored} of {len(cfg)} characters"
+                return f"✅ {name}: saved and stored in the lab ({len(cfg.splitlines())} lines)"
 
-            t_saved = loop.time()
-            user = ssh_settings()["user"]
-            lines, ok_nodes = [], []
-            for (nid, name), w in zip(up, saved):
-                if w == "ok":
-                    ok_nodes.append((nid, name))
-                else:
-                    lines.append(f"⚠️ {name}: write memory failed ({w}); not exported")
-            if ok_nodes:
-                # EVE-NG's IOSv export script has a hard 15s timeout and takes ~14s per node,
-                # so exports must run ONE AT A TIME (in parallel they all time out). That can
-                # take longer than one tool call may wait, so the sequence runs as a background
-                # job on the EVE-NG host; we wait as long as the budget allows and report.
-                log = _export_log(arguments.lab_path, pod)
-                steps = []
-                for nid, _ in ok_nodes:
-                    c = build_command("export", pod, int(nid), arguments.lab_path, user)
-                    steps.append(f"{c} >/dev/null 2>&1; echo \"RC {nid} $?\"")
-                job = "; ".join(steps) + "; echo DONE"
-                await ssh_run(host, f"rm -f {log}; nohup sh -c {shlex.quote(job)} > {log} 2>&1 < /dev/null &")
-                codes, done = {}, False
-                while loop.time() - t0 < 44:
-                    await asyncio.sleep(3)
-                    codes, done, _ = await _read_export_log(host, log)
-                    if done:
-                        break
-                for nid, name in ok_nodes:
-                    code = codes.get(str(nid))
-                    if code == "0":
-                        lines.append(f"✅ {name}: saved and exported")
-                    elif code is None:
-                        lines.append(f"⏳ {name}: saved; export still running in the background")
-                    else:
-                        lines.append(f"⚠️ {name}: saved on the device, export exit {code}")
-                if not done:
-                    lines.append("Exports continue on EVE-NG one at a time (~15s per router). "
-                                 "Run export_status for the final result, and keep consoles idle until then.")
-            lines.append(f"(write memory {t_saved - t0:.0f}s, export {loop.time() - t_saved:.0f}s)")
+            lines = list(await asyncio.gather(*(one(n, nm) for n, nm in up)))
             if down:
                 lines.append("Skipped (not running): " + ", ".join(n for _, n in down))
+            lines.append(f"({loop.time() - t0:.0f}s)")
             return [TextContent(type="text", text=f"{arguments.lab_path}\n" + "\n".join(lines))]
-        except PowerError as e:
-            return [TextContent(type="text", text=f"Power/SSH error: {e}")]
         except Exception as e:
             logger.error(f"save_lab_configs failed: {e}")
             return [TextContent(type="text", text=f"Failed to save lab configs: {e}")]
-
-    @mcp.tool()
-    async def export_status(arguments: LabNodesArgs) -> list[TextContent]:
-        """
-        Show the result of the last save_lab_configs export job for a lab (exports of
-        IOSv routers run one at a time in the background on EVE-NG).
-        """
-        try:
-            pod = _pod(arguments.pod)
-            host = eveng_client.config.eveng.host
-            codes, done, exists = await _read_export_log(host, _export_log(arguments.lab_path, pod))
-            if not exists:
-                return [TextContent(type="text", text="No export job found for this lab.")]
-            if not codes and not done:
-                return [TextContent(type="text", text=f"{arguments.lab_path}\nStill running... (first export not finished yet)")]
-            names = dict(await _resolve_nodes(eveng_client, arguments.lab_path, None))
-            lines = [f"{'✅' if c == '0' else '⚠️'} {names.get(n, 'node ' + n)}: export {'ok' if c == '0' else 'exit ' + c}"
-                     for n, c in codes.items()]
-            lines.append("Finished." if done else "Still running...")
-            return [TextContent(type="text", text=f"{arguments.lab_path}\n" + "\n".join(lines))]
-        except PowerError as e:
-            return [TextContent(type="text", text=f"Power/SSH error: {e}")]
 
     @mcp.tool()
     async def backup_lab_configs(arguments: BackupArgs) -> list[TextContent]:

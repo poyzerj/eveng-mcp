@@ -35,6 +35,7 @@ dependencies = [
     "structlog>=23.0.0",
     "typer>=0.9.0",
     "rich>=10.16.0",
+    "asyncssh>=2.14",
 ]
 
 [project.optional-dependencies]

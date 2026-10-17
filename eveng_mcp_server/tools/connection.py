@@ -135,6 +135,14 @@ def register_connection_tools(mcp: "FastMCP", eveng_client: "EVENGClientWrapper"
         try:
             logger.info("Testing EVE-NG server connection")
             
+            try:
+            
+                await eveng_client.ensure_connected()
+            
+            except Exception:
+            
+                pass
+            
             if not eveng_client.is_connected:
                 return [TextContent(
                     type="text",
@@ -172,6 +180,14 @@ def register_connection_tools(mcp: "FastMCP", eveng_client: "EVENGClientWrapper"
         """
         try:
             logger.info("Retrieving EVE-NG server information")
+            
+            try:
+            
+                await eveng_client.ensure_connected()
+            
+            except Exception:
+            
+                pass
             
             if not eveng_client.is_connected:
                 return [TextContent(

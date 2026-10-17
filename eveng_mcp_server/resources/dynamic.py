@@ -24,6 +24,10 @@ def register_dynamic_resources(mcp: "FastMCP", eveng_client: "EVENGClientWrapper
     async def get_server_status() -> str:
         """Get real-time EVE-NG server status."""
         try:
+            try:
+                await eveng_client.ensure_connected()
+            except Exception:
+                pass
             if not eveng_client.is_connected:
                 await eveng_client.connect()
             
@@ -48,6 +52,10 @@ def register_dynamic_resources(mcp: "FastMCP", eveng_client: "EVENGClientWrapper
     async def get_lab_resource(lab_name: str) -> str:
         """Get lab configuration and metadata."""
         try:
+            try:
+                await eveng_client.ensure_connected()
+            except Exception:
+                pass
             if not eveng_client.is_connected:
                 await eveng_client.connect()
             
@@ -85,6 +93,10 @@ def register_dynamic_resources(mcp: "FastMCP", eveng_client: "EVENGClientWrapper
     async def get_lab_topology_resource(lab_name: str) -> str:
         """Get lab topology representation."""
         try:
+            try:
+                await eveng_client.ensure_connected()
+            except Exception:
+                pass
             if not eveng_client.is_connected:
                 await eveng_client.connect()
             
@@ -98,7 +110,8 @@ def register_dynamic_resources(mcp: "FastMCP", eveng_client: "EVENGClientWrapper
             
             # Format topology data
             connections = []
-            for conn_id, conn in topology['data'].items():
+            _links = topology['data']
+            for conn_id, conn in (_links.items() if isinstance(_links, dict) else enumerate(_links)):
                 connections.append({
                     "id": conn_id,
                     "source": {
@@ -129,6 +142,10 @@ def register_dynamic_resources(mcp: "FastMCP", eveng_client: "EVENGClientWrapper
     async def get_lab_nodes_resource(lab_name: str) -> str:
         """Get lab node inventory and status."""
         try:
+            try:
+                await eveng_client.ensure_connected()
+            except Exception:
+                pass
             if not eveng_client.is_connected:
                 await eveng_client.connect()
             
@@ -177,6 +194,10 @@ def register_dynamic_resources(mcp: "FastMCP", eveng_client: "EVENGClientWrapper
     async def get_lab_networks_resource(lab_name: str) -> str:
         """Get lab network configuration."""
         try:
+            try:
+                await eveng_client.ensure_connected()
+            except Exception:
+                pass
             if not eveng_client.is_connected:
                 await eveng_client.connect()
             
@@ -217,6 +238,10 @@ def register_dynamic_resources(mcp: "FastMCP", eveng_client: "EVENGClientWrapper
     async def get_template_resource(template_name: str) -> str:
         """Get template specifications."""
         try:
+            try:
+                await eveng_client.ensure_connected()
+            except Exception:
+                pass
             if not eveng_client.is_connected:
                 await eveng_client.connect()
             
@@ -251,6 +276,10 @@ def register_dynamic_resources(mcp: "FastMCP", eveng_client: "EVENGClientWrapper
     async def get_node_config_resource(lab_name: str, node_name: str) -> str:
         """Get individual node configuration."""
         try:
+            try:
+                await eveng_client.ensure_connected()
+            except Exception:
+                pass
             if not eveng_client.is_connected:
                 await eveng_client.connect()
 

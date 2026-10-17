@@ -38,8 +38,8 @@ class AddNodeArgs(BaseModel):
     template: str = Field(description="Node template name (e.g., 'vios', 'linux', 'iol')")
     name: str = Field(default="", description="Node name (optional, auto-generated if empty)")
     node_type: str = Field(default="qemu", description="Node type (qemu, iol, dynamips)")
-    left: int = Field(default=50, description="Position from left (percentage, 0-100)")
-    top: int = Field(default=50, description="Position from top (percentage, 0-100)")
+    left: Optional[int] = Field(default=None, description="Pixels from the left of the canvas. Leave empty to auto-place without overlapping.")
+    top: Optional[int] = Field(default=None, description="Pixels from the top of the canvas. Leave empty to auto-place without overlapping.")
     delay: int = Field(default=0, description="Seconds to wait before starting node")
     console: str = Field(default="telnet", description="Console type (telnet, vnc)")
     config: str = Field(default="Unconfigured", description="Config state (Unconfigured, Saved)")
@@ -78,6 +78,25 @@ class ListTemplatesArgs(BaseModel):
     pass  # No arguments needed
 
 
+class MoveNodeArgs(BaseModel):
+    """Arguments for move_node tool."""
+    lab_path: str = Field(description="Full path to the lab (e.g., /lab_name.unl)")
+    node_id: str = Field(description="Node ID to move")
+    left: int = Field(description="Pixels from the left edge of the canvas")
+    top: int = Field(description="Pixels from the top edge of the canvas")
+
+
+class ArrangeNodesArgs(BaseModel):
+    """Arguments for arrange_nodes tool."""
+    lab_path: str = Field(description="Full path to the lab (e.g., /lab_name.unl)")
+    layout: str = Field(default="row", description="'row', 'column', or 'grid'")
+    spacing: int = Field(default=350, description="Pixels between nodes")
+    columns: int = Field(default=4, description="Nodes per row when layout is 'grid'")
+    start_left: int = Field(default=150, description="Pixels from left for the first node")
+    start_top: int = Field(default=200, description="Pixels from top for the first node")
+    order: Optional[List[str]] = Field(default=None, description="Optional node names or IDs in the order to place them")
+
+
 def register_node_tools(mcp: "FastMCP", eveng_client: "EVENGClientWrapper") -> None:
     """Register node management tools."""
 
@@ -91,6 +110,14 @@ def register_node_tools(mcp: "FastMCP", eveng_client: "EVENGClientWrapper") -> N
         """
         try:
             logger.info("Listing available node templates")
+
+            try:
+
+                await eveng_client.ensure_connected()
+
+            except Exception:
+
+                pass
 
             if not eveng_client.is_connected:
                 return [TextContent(
@@ -111,6 +138,11 @@ def register_node_tools(mcp: "FastMCP", eveng_client: "EVENGClientWrapper") -> N
             templates_text = "Available Node Templates:\n\n"
 
             for template_name, template_info in templates['data'].items():
+                # Newer EVE-NG returns {name: "Description"}; '.missing' means no image installed
+                if isinstance(template_info, str):
+                    if template_info.endswith('.missing'):
+                        continue
+                    template_info = {'description': template_info}
                 templates_text += f"📦 {template_name}\n"
                 templates_text += f"   Type: {template_info.get('type', 'Unknown')}\n"
                 templates_text += f"   Description: {template_info.get('description', 'No description')}\n"
@@ -144,6 +176,14 @@ def register_node_tools(mcp: "FastMCP", eveng_client: "EVENGClientWrapper") -> N
         try:
             logger.info(f"Listing nodes in lab: {arguments.lab_path}")
 
+            try:
+
+                await eveng_client.ensure_connected()
+
+            except Exception:
+
+                pass
+
             if not eveng_client.is_connected:
                 return [TextContent(
                     type="text",
@@ -172,7 +212,7 @@ def register_node_tools(mcp: "FastMCP", eveng_client: "EVENGClientWrapper") -> N
                 nodes_text += f"   Console: {node.get('console', 'Unknown')}\n"
                 nodes_text += f"   CPU: {node.get('cpu', 'Unknown')}\n"
                 nodes_text += f"   RAM: {node.get('ram', 'Unknown')} MB\n"
-                nodes_text += f"   Position: ({node.get('left', 0)}%, {node.get('top', 0)}%)\n"
+                nodes_text += f"   Position: ({node.get('left', 0)}, {node.get('top', 0)}) px\n"
                 nodes_text += "\n"
 
             return [TextContent(
@@ -199,18 +239,36 @@ def register_node_tools(mcp: "FastMCP", eveng_client: "EVENGClientWrapper") -> N
         try:
             logger.info(f"Adding node to lab: {arguments.lab_path}")
 
+            try:
+
+                await eveng_client.ensure_connected()
+
+            except Exception:
+
+                pass
+
             if not eveng_client.is_connected:
                 return [TextContent(
                     type="text",
                     text="Not connected to EVE-NG server. Use connect_eveng_server tool first."
                 )]
 
+            # Auto-place on a grid when no position given (EVE-NG uses pixels)
+            left, top = arguments.left, arguments.top
+            if left is None or top is None:
+                try:
+                    existing = len((await eveng_client.list_nodes(arguments.lab_path)).get("data") or {})
+                except Exception:
+                    existing = 0
+                left = 150 + (existing % 4) * 350 if left is None else left
+                top = 200 + (existing // 4) * 200 if top is None else top
+
             # Prepare node parameters
             node_params = {
                 "name": arguments.name,
                 "node_type": arguments.node_type,
-                "left": arguments.left,
-                "top": arguments.top,
+                "left": left,
+                "top": top,
                 "delay": arguments.delay,
                 "console": arguments.console,
                 "config": arguments.config,
@@ -241,7 +299,7 @@ def register_node_tools(mcp: "FastMCP", eveng_client: "EVENGClientWrapper") -> N
                          f"Node ID: {node_id}\n"
                          f"Name: {arguments.name or f'Node{node_id}'}\n"
                          f"Type: {arguments.node_type}\n"
-                         f"Position: ({arguments.left}%, {arguments.top}%)\n\n"
+                         f"Position: ({left}, {top}) px\n\n"
                          f"Node created successfully. Use start_node to power it on."
                 )]
             else:
@@ -267,6 +325,14 @@ def register_node_tools(mcp: "FastMCP", eveng_client: "EVENGClientWrapper") -> N
         """
         try:
             logger.info(f"Getting node details: {arguments.node_id} in {arguments.lab_path}")
+
+            try:
+
+                await eveng_client.ensure_connected()
+
+            except Exception:
+
+                pass
 
             if not eveng_client.is_connected:
                 return [TextContent(
@@ -306,8 +372,8 @@ def register_node_tools(mcp: "FastMCP", eveng_client: "EVENGClientWrapper") -> N
             details_text += f"   Delay: {node_data.get('delay', 0)} seconds\n\n"
 
             details_text += f"📍 Position:\n"
-            details_text += f"   Left: {node_data.get('left', 0)}%\n"
-            details_text += f"   Top: {node_data.get('top', 0)}%\n"
+            details_text += f"   Left: {node_data.get('left', 0)} px\n"
+            details_text += f"   Top: {node_data.get('top', 0)} px\n"
 
             return [TextContent(
                 type="text",
@@ -331,6 +397,14 @@ def register_node_tools(mcp: "FastMCP", eveng_client: "EVENGClientWrapper") -> N
         """
         try:
             logger.info(f"Starting node {arguments.node_id} in {arguments.lab_path}")
+
+            try:
+
+                await eveng_client.ensure_connected()
+
+            except Exception:
+
+                pass
 
             if not eveng_client.is_connected:
                 return [TextContent(
@@ -371,6 +445,14 @@ def register_node_tools(mcp: "FastMCP", eveng_client: "EVENGClientWrapper") -> N
         try:
             logger.info(f"Stopping node {arguments.node_id} in {arguments.lab_path}")
 
+            try:
+
+                await eveng_client.ensure_connected()
+
+            except Exception:
+
+                pass
+
             if not eveng_client.is_connected:
                 return [TextContent(
                     type="text",
@@ -409,6 +491,14 @@ def register_node_tools(mcp: "FastMCP", eveng_client: "EVENGClientWrapper") -> N
         """
         try:
             logger.info(f"Starting all nodes in {arguments.lab_path}")
+
+            try:
+
+                await eveng_client.ensure_connected()
+
+            except Exception:
+
+                pass
 
             if not eveng_client.is_connected:
                 return [TextContent(
@@ -449,6 +539,14 @@ def register_node_tools(mcp: "FastMCP", eveng_client: "EVENGClientWrapper") -> N
         try:
             logger.info(f"Stopping all nodes in {arguments.lab_path}")
 
+            try:
+
+                await eveng_client.ensure_connected()
+
+            except Exception:
+
+                pass
+
             if not eveng_client.is_connected:
                 return [TextContent(
                     type="text",
@@ -488,6 +586,14 @@ def register_node_tools(mcp: "FastMCP", eveng_client: "EVENGClientWrapper") -> N
         """
         try:
             logger.info(f"Wiping node {arguments.node_id} in {arguments.lab_path}")
+
+            try:
+
+                await eveng_client.ensure_connected()
+
+            except Exception:
+
+                pass
 
             if not eveng_client.is_connected:
                 return [TextContent(
@@ -530,6 +636,14 @@ def register_node_tools(mcp: "FastMCP", eveng_client: "EVENGClientWrapper") -> N
         try:
             logger.info(f"Wiping all nodes in {arguments.lab_path}")
 
+            try:
+
+                await eveng_client.ensure_connected()
+
+            except Exception:
+
+                pass
+
             if not eveng_client.is_connected:
                 return [TextContent(
                     type="text",
@@ -570,6 +684,14 @@ def register_node_tools(mcp: "FastMCP", eveng_client: "EVENGClientWrapper") -> N
         try:
             logger.info(f"Deleting node {arguments.node_id} from {arguments.lab_path}")
 
+            try:
+
+                await eveng_client.ensure_connected()
+
+            except Exception:
+
+                pass
+
             if not eveng_client.is_connected:
                 return [TextContent(
                     type="text",
@@ -598,3 +720,61 @@ def register_node_tools(mcp: "FastMCP", eveng_client: "EVENGClientWrapper") -> N
                 type="text",
                 text=f"Failed to delete node: {str(e)}"
             )]
+
+    # ---- layout --------------------------------------------------------------
+    # EVE-NG canvas positions are pixels from the top-left corner.
+    def _layout_positions(count: int, layout: str, spacing: int, start_left: int, start_top: int, columns: int):
+        if layout == "row":
+            return [(start_left + i * spacing, start_top) for i in range(count)]
+        if layout == "column":
+            return [(start_left, start_top + i * spacing) for i in range(count)]
+        cols = max(1, columns)
+        return [(start_left + (i % cols) * spacing, start_top + (i // cols) * spacing) for i in range(count)]
+
+    @mcp.tool()
+    async def move_node(arguments: MoveNodeArgs) -> list[TextContent]:
+        """
+        Move a node to a new position on the lab canvas.
+
+        Positions are in pixels from the top-left of the canvas. A comfortable
+        spacing between nodes is about 200-250 pixels.
+        """
+        try:
+            await eveng_client.ensure_connected()
+            await eveng_client.move_node(arguments.lab_path, arguments.node_id, arguments.left, arguments.top)
+            return [TextContent(type="text", text=f"Moved node {arguments.node_id} to ({arguments.left}, {arguments.top}) px.")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Failed to move node: {str(e)}")]
+
+    @mcp.tool()
+    async def arrange_nodes(arguments: ArrangeNodesArgs) -> list[TextContent]:
+        """
+        Spread out all nodes in a lab so they don't overlap.
+
+        layout: 'row' (left to right, good for a chain like R1-R2-R3),
+        'column' (top to bottom), or 'grid'. Nodes are placed in ID order
+        unless 'order' lists node names or IDs.
+        """
+        try:
+            await eveng_client.ensure_connected()
+            nodes = (await eveng_client.list_nodes(arguments.lab_path)).get("data") or {}
+            items = [(str(n.get("id", k)), n.get("name", str(k))) for k, n in nodes.items()]
+            items.sort(key=lambda x: int(x[0]) if x[0].isdigit() else 0)
+            if arguments.order:
+                want = [str(o).strip().lower() for o in arguments.order]
+                rank = {}
+                for i, w in enumerate(want):
+                    for nid, name in items:
+                        if w in (nid.lower(), name.lower()):
+                            rank[nid] = i
+                items.sort(key=lambda x: rank.get(x[0], len(want) + int(x[0]) if x[0].isdigit() else 999))
+            pos = _layout_positions(len(items), arguments.layout, arguments.spacing,
+                                    arguments.start_left, arguments.start_top, arguments.columns)
+            lines = []
+            for (nid, name), (x, y) in zip(items, pos):
+                await eveng_client.move_node(arguments.lab_path, nid, x, y)
+                lines.append(f"   {name} (ID {nid}) -> ({x}, {y})")
+            return [TextContent(type="text", text=f"Arranged {len(items)} nodes ({arguments.layout}):\n" + "\n".join(lines) +
+                                "\n\nRefresh the lab in the EVE-NG web UI to see the new layout.")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Failed to arrange nodes: {str(e)}")]

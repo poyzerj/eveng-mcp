@@ -72,6 +72,14 @@ def register_network_tools(mcp: "FastMCP", eveng_client: "EVENGClientWrapper") -
         try:
             logger.info("Listing available network types")
 
+            try:
+
+                await eveng_client.ensure_connected()
+
+            except Exception:
+
+                pass
+
             if not eveng_client.is_connected:
                 return [TextContent(
                     type="text",
@@ -118,6 +126,14 @@ def register_network_tools(mcp: "FastMCP", eveng_client: "EVENGClientWrapper") -
         """
         try:
             logger.info(f"Listing networks in lab: {arguments.lab_path}")
+
+            try:
+
+                await eveng_client.ensure_connected()
+
+            except Exception:
+
+                pass
 
             if not eveng_client.is_connected:
                 return [TextContent(
@@ -166,6 +182,14 @@ def register_network_tools(mcp: "FastMCP", eveng_client: "EVENGClientWrapper") -
         """
         try:
             logger.info(f"Creating network in lab: {arguments.lab_path}")
+
+            try:
+
+                await eveng_client.ensure_connected()
+
+            except Exception:
+
+                pass
 
             if not eveng_client.is_connected:
                 return [TextContent(
@@ -219,6 +243,14 @@ def register_network_tools(mcp: "FastMCP", eveng_client: "EVENGClientWrapper") -
         try:
             logger.info(f"Deleting network {arguments.network_id} from {arguments.lab_path}")
 
+            try:
+
+                await eveng_client.ensure_connected()
+
+            except Exception:
+
+                pass
+
             if not eveng_client.is_connected:
                 return [TextContent(
                     type="text",
@@ -259,6 +291,14 @@ def register_network_tools(mcp: "FastMCP", eveng_client: "EVENGClientWrapper") -
         """
         try:
             logger.info(f"Connecting node {arguments.node_id} to network {arguments.network_id}")
+
+            try:
+
+                await eveng_client.ensure_connected()
+
+            except Exception:
+
+                pass
 
             if not eveng_client.is_connected:
                 return [TextContent(
@@ -308,6 +348,14 @@ def register_network_tools(mcp: "FastMCP", eveng_client: "EVENGClientWrapper") -
         try:
             logger.info(f"Connecting node {arguments.src_node_id} to node {arguments.dst_node_id}")
 
+            try:
+
+                await eveng_client.ensure_connected()
+
+            except Exception:
+
+                pass
+
             if not eveng_client.is_connected:
                 return [TextContent(
                     type="text",
@@ -356,6 +404,14 @@ def register_network_tools(mcp: "FastMCP", eveng_client: "EVENGClientWrapper") -
         try:
             logger.info(f"Getting topology for lab: {arguments.lab_path}")
 
+            try:
+
+                await eveng_client.ensure_connected()
+
+            except Exception:
+
+                pass
+
             if not eveng_client.is_connected:
                 return [TextContent(
                     type="text",
@@ -379,7 +435,9 @@ def register_network_tools(mcp: "FastMCP", eveng_client: "EVENGClientWrapper") -
             # Show connections
             topology_text += "🔗 Connections:\n"
             if topology_data:
-                for connection_id, connection in topology_data.items():
+                # EVE-NG returns topology as a list of links (older builds: a dict)
+                links = topology_data.values() if isinstance(topology_data, dict) else topology_data
+                for connection in links:
                     src_type = "Node" if connection.get('source_type') == 'node' else "Network"
                     dst_type = "Node" if connection.get('destination_type') == 'node' else "Network"
 

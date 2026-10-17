@@ -55,6 +55,14 @@ def register_lab_tools(mcp: "FastMCP", eveng_client: "EVENGClientWrapper") -> No
         try:
             logger.info(f"Listing labs in path: {path}")
 
+            try:
+
+                await eveng_client.ensure_connected()
+
+            except Exception:
+
+                pass
+
             if not eveng_client.is_connected:
                 return [TextContent(
                     type="text",
@@ -105,6 +113,14 @@ def register_lab_tools(mcp: "FastMCP", eveng_client: "EVENGClientWrapper") -> No
         try:
             logger.info(f"Creating lab: {name} in {path}")
 
+            try:
+
+                await eveng_client.ensure_connected()
+
+            except Exception:
+
+                pass
+
             if not eveng_client.is_connected:
                 return [TextContent(
                     type="text",
@@ -148,6 +164,14 @@ def register_lab_tools(mcp: "FastMCP", eveng_client: "EVENGClientWrapper") -> No
         """
         try:
             logger.info(f"Getting details for lab: {lab_path}")
+
+            try:
+
+                await eveng_client.ensure_connected()
+
+            except Exception:
+
+                pass
 
             if not eveng_client.is_connected:
                 return [TextContent(
@@ -324,6 +348,14 @@ def register_lab_tools(mcp: "FastMCP", eveng_client: "EVENGClientWrapper") -> No
         """
         try:
             logger.info(f"Deleting lab: {lab_path}")
+
+            try:
+
+                await eveng_client.ensure_connected()
+
+            except Exception:
+
+                pass
 
             if not eveng_client.is_connected:
                 return [TextContent(

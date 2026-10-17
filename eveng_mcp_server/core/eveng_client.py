@@ -1,6 +1,8 @@
 """EVE-NG client wrapper with enhanced error handling and logging."""
 
 import asyncio
+import json
+import re
 import urllib3
 from typing import Optional, Dict, Any, List
 from contextlib import asynccontextmanager
@@ -89,6 +91,7 @@ class EVENGClientWrapper(LoggerMixin):
                     password=self.config.eveng.password
                 )
                 self._authenticated = True
+                self._install_reauth()
 
                 # Initialize API wrapper
                 self._api = EvengApi(self._client)
@@ -140,6 +143,103 @@ class EVENGClientWrapper(LoggerMixin):
                 self._api = None
                 self._authenticated = False
     
+    def _install_reauth(self) -> None:
+        """Wrap the SDK request method so an expired session re-logs in once and retries.
+
+        EVE-NG drops the session cookie (HTTP 412 / 401) after idle time or when the
+        same user logs in elsewhere (e.g. the web UI). The SDK never recovers on its
+        own, which caused the "connect works, next call fails" behavior.
+        """
+        client = self._client
+        original = client._make_request
+        cfg = self.config.eveng
+
+        def make_request(method, url, *args, **kwargs):
+            try:
+                return original(method, url, *args, **kwargs)
+            except (EvengHTTPError, ValueError) as e:
+                msg = str(e)
+                if not any(k in msg for k in ("412", "401", "No valid session", "Unauthorized")):
+                    raise
+                self.logger.info("EVE-NG session expired, re-authenticating")
+                client.session = None
+                client.login(username=cfg.username, password=cfg.password)
+                return original(method, url, *args, **kwargs)
+
+        client._make_request = make_request
+
+    # ---- ID / name / interface resolution -------------------------------------
+    # The SDK link functions look nodes and networks up by NAME, but the MCP tools
+    # pass IDs ("1", "2"). That mismatch is what produced "NoneType has no attribute
+    # get" and "node 1 not found or invalid".
+
+    def _node_name(self, lab_path: str, ref: str) -> tuple[str, str]:
+        """Return (node_id, node_name) for a node given its ID or name."""
+        nodes = (self.api.list_nodes(lab_path) or {}).get("data") or {}
+        ref = str(ref).strip()
+        for nid, n in nodes.items():
+            if str(nid) == ref or str(n.get("id")) == ref:
+                return str(n.get("id", nid)), n["name"]
+        for nid, n in nodes.items():
+            if n.get("name", "").lower() == ref.lower():
+                return str(n.get("id", nid)), n["name"]
+        names = ", ".join(f"{n.get('id', k)}={n.get('name')}" for k, n in nodes.items())
+        raise ValueError(f"Node '{ref}' not found in {lab_path}. Nodes: {names or 'none'}")
+
+    def _network_name(self, lab_path: str, ref: str) -> str:
+        """Return the network name for a network given its ID or name."""
+        nets = (self.api.list_lab_networks(lab_path) or {}).get("data") or {}
+        ref = str(ref).strip()
+        for nid, n in nets.items():
+            if str(nid) == ref or str(n.get("id")) == ref:
+                return n["name"]
+        for _, n in nets.items():
+            if n.get("name", "").lower() == ref.lower():
+                return n["name"]
+        names = ", ".join(f"{n.get('id', k)}={n.get('name')}" for k, n in nets.items())
+        raise ValueError(f"Network '{ref}' not found in {lab_path}. Networks: {names or 'none'}")
+
+    _IF_ALIASES = {
+        "gigabitethernet": "gi", "fastethernet": "fa", "ethernet": "e",
+        "tengigabitethernet": "te", "serial": "s", "port": "port",
+    }
+
+    @classmethod
+    def _norm_if(cls, name: str) -> str:
+        n = re.sub(r"[\s_-]", "", str(name).lower())
+        for long, short in sorted(cls._IF_ALIASES.items(), key=lambda x: -len(x[0])):
+            if n.startswith(long):
+                return short + n[len(long):]
+        m = re.match(r"([a-z]+)(.*)", n)
+        if m:
+            for long, short in cls._IF_ALIASES.items():
+                if long.startswith(m.group(1)) and len(m.group(1)) >= len(short):
+                    return short + m.group(2)
+        return n
+
+    def _interface_label(self, lab_path: str, node_id: str, label: str,
+                         media: str = "ethernet") -> str:
+        """Map a user-friendly interface name (Gi0/0, GigabitEthernet0/0, e0/1,
+        port1) to the exact label EVE-NG uses for this node."""
+        data = (self.api.get_node_interfaces(lab_path, node_id) or {}).get("data") or {}
+        ifaces = data.get(media) or []
+        if isinstance(ifaces, dict):
+            ifaces = list(ifaces.values())
+        names = [i.get("name", "") for i in ifaces]
+        if label in names:
+            return label
+        for n in names:
+            if n.lower() == str(label).lower():
+                return n
+        want = self._norm_if(label)
+        for n in names:
+            if self._norm_if(n) == want:
+                return n
+        raise ValueError(
+            f"Interface '{label}' not found on node {node_id}. "
+            f"Available {media} interfaces: {', '.join(names) or 'none'}"
+        )
+
     async def ensure_connected(self) -> None:
         """Ensure client is connected, reconnect if necessary."""
         if not self.is_connected:
@@ -538,7 +638,12 @@ class EVENGClientWrapper(LoggerMixin):
         await self.ensure_connected()
 
         try:
-            result = await asyncio.to_thread(self.api.connect_node_to_cloud, lab_path, src, src_label, dst)
+            def _do():
+                nid, sname = self._node_name(lab_path, src)
+                label = self._interface_label(lab_path, nid, src_label)
+                dname = self._network_name(lab_path, dst)
+                return self.api.connect_node_to_cloud(lab_path, sname, label, dname)
+            result = await asyncio.to_thread(_do)
             self.logger.info("Connected node to cloud", lab_path=lab_path, src=src, dst=dst)
             return result
         except Exception as e:
@@ -550,12 +655,31 @@ class EVENGClientWrapper(LoggerMixin):
         await self.ensure_connected()
 
         try:
-            result = await asyncio.to_thread(self.api.connect_node_to_node, lab_path, src, src_label, dst, dst_label)
+            def _do():
+                sid, sname = self._node_name(lab_path, src)
+                did, dname = self._node_name(lab_path, dst)
+                slabel = self._interface_label(lab_path, sid, src_label)
+                dlabel = self._interface_label(lab_path, did, dst_label)
+                return self.api.connect_node_to_node(lab_path, sname, slabel, dname, dlabel)
+            result = await asyncio.to_thread(_do)
             self.logger.info("Connected nodes", lab_path=lab_path, src=src, dst=dst)
             return result
         except Exception as e:
             self.logger.error("Failed to connect nodes", **log_error(e, {"lab_path": lab_path, "src": src, "dst": dst}))
             raise EVENGAPIError(f"Failed to connect nodes: {str(e)}")
+
+    async def move_node(self, lab_path: str, node_id: str, left: int, top: int) -> Dict[str, Any]:
+        """Set a node's position on the lab canvas (pixels)."""
+        await self.ensure_connected()
+
+        def _do():
+            norm = self.api.normalize_path(lab_path)
+            payload = {"id": int(node_id), "left": int(left), "top": int(top)}
+            return self.client.put(f"/labs{norm}/nodes/{node_id}", data=json.dumps(payload))
+        try:
+            return await asyncio.to_thread(_do)
+        except Exception as e:
+            raise EVENGAPIError(f"Failed to move node {node_id}: {str(e)}")
 
     async def get_lab_topology(self, lab_path: str) -> Dict[str, Any]:
         """Get lab topology information."""

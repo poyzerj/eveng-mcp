@@ -10,6 +10,7 @@ from .connection import register_connection_tools
 from .lab_management import register_lab_tools
 from .node_management import register_node_tools
 from .network_management import register_network_tools
+from .console_tools import register_console_tools
 
 
 def register_tools(mcp: "FastMCP", eveng_client: "EVENGClientWrapper") -> None:
@@ -26,6 +27,9 @@ def register_tools(mcp: "FastMCP", eveng_client: "EVENGClientWrapper") -> None:
 
     # Network management tools
     register_network_tools(mcp, eveng_client)
+
+    # Console tools (CLI on running nodes)
+    register_console_tools(mcp, eveng_client)
 
 
 __all__ = [

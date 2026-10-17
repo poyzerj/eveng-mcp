@@ -38,8 +38,34 @@ def ssh_settings() -> dict:
         "user": os.environ.get("EVENG_SSH_USER", "root"),
         "password": os.environ.get("EVENG_SSH_PASSWORD") or None,
         "port": int(os.environ.get("EVENG_SSH_PORT", "22")),
-        "key": os.environ.get("EVENG_SSH_KEY") or None,
+        "key": os.path.expanduser(os.environ["EVENG_SSH_KEY"]) if os.environ.get("EVENG_SSH_KEY") else None,
+        "known_hosts": os.path.expanduser(os.environ.get("EVENG_SSH_KNOWN_HOSTS", "~/.eveng-mcp/known_hosts")),
     }
+
+
+def _kh_name(host: str, port: int) -> str:
+    return host if port == 22 else f"[{host}]:{port}"
+
+
+async def ensure_host_key(host: str, port: int, path: str) -> str:
+    """Trust on first use: the first connection records the server's host key in
+    `path`; later connections must match it (asyncssh verifies against the file).
+    Returns a note when a key was recorded for the first time, else ''."""
+    import asyncssh
+    name = _kh_name(host, port)
+    if os.path.exists(path):
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                if line.split(" ", 1)[0] == name:
+                    return ""
+    key = await asyncio.wait_for(asyncssh.get_server_host_key(host, port), timeout=10)
+    if key is None:
+        raise PowerError(f"Could not read the SSH host key from {host}:{port}.")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(f"{name} {key.export_public_key().decode().strip()}\n")
+    return (f"Recorded EVE-NG's SSH host key ({key.get_fingerprint()}) in {path}. "
+            "Future connections will refuse a different key.")
 
 
 def lab_file(lab_path: str) -> str:
@@ -67,10 +93,18 @@ async def ssh_run(host: str, command: str, timeout: float = 40) -> Tuple[int, st
         raise PowerError("asyncssh is not installed. Run 'uv sync' in the server folder.")
     s = ssh_settings()
     if not s["password"] and not s["key"]:
-        raise PowerError("SSH is not configured. Set EVENG_SSH_PASSWORD (or EVENG_SSH_KEY) "
-                         "in the MCP server's env in the Claude Desktop config.")
-    kwargs = dict(port=s["port"], username=s["user"], known_hosts=None)
+        raise PowerError("SSH is not configured. Run scripts/setup-ssh-key.ps1 (sets EVENG_SSH_KEY), "
+                         "or set EVENG_SSH_PASSWORD in the MCP server's env in the Claude Desktop config.")
+    try:
+        await ensure_host_key(host, s["port"], s["known_hosts"])
+    except PowerError:
+        raise
+    except (OSError, asyncssh.Error, asyncio.TimeoutError) as e:
+        raise PowerError(f"SSH to {host}:{s['port']} failed while reading its host key: {e.__class__.__name__}: {e}")
+    kwargs = dict(port=s["port"], username=s["user"], known_hosts=s["known_hosts"])
     if s["key"]:
+        if not os.path.exists(s["key"]):
+            raise PowerError(f"EVENG_SSH_KEY points to {s['key']}, which doesn't exist.")
         kwargs["client_keys"] = [s["key"]]
     if s["password"]:
         kwargs["password"] = s["password"]
@@ -81,6 +115,11 @@ async def ssh_run(host: str, command: str, timeout: float = 40) -> Tuple[int, st
             return r.exit_status or 0, out
     except asyncssh.PermissionDenied:
         raise PowerError(f"SSH login to {host} as '{s['user']}' was refused (wrong password or key).")
+    except asyncssh.HostKeyNotVerifiable:
+        raise PowerError(
+            f"EVE-NG's SSH host key does NOT match the one recorded in {s['known_hosts']}. "
+            "Refusing to connect. If you rebuilt or replaced the EVE-NG server, delete its line "
+            "from that file and try again; otherwise something may be impersonating it.")
     except (OSError, asyncssh.Error, asyncio.TimeoutError) as e:
         raise PowerError(f"SSH to {host}:{s['port']} failed: {e.__class__.__name__}: {e}")
 

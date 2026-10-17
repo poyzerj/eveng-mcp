@@ -34,8 +34,13 @@
    powershell -ExecutionPolicy Bypass -File .\scripts\setup-windows.ps1 -EveHost <eve-ng-ip>
    ```
    It installs Git/uv if needed, clones this fork to `C:\eveng-mcp`, finds EVE-NG, and writes the Claude Desktop config.
-3. Optional, for `power_nodes`: add `EVENG_SSH_USER` (e.g. `root`) and `EVENG_SSH_PASSWORD` to the
-   `eveng-mcp-server` env in the Claude Desktop config.
+3. Optional, for `power_nodes` (start/stop as the web UI user): set up an SSH key to EVE-NG.
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File .\scripts\setup-ssh-key.ps1
+   ```
+   It creates `~\.ssh\eveng_mcp_ed25519`, installs it on EVE-NG (asks for the password once),
+   pins EVE-NG's host key, and sets `EVENG_SSH_KEY` in the Claude Desktop config with no password stored.
+   The server refuses to connect if EVE-NG's host key ever changes (pinned in `~\.eveng-mcp\known_hosts`).
 4. Fully quit Claude Desktop (system tray → Quit) and reopen it.
 
 **Console notes:** `run_node_commands` reaches nodes started from the web UI by the `admin` user (EVE-NG POD 0).

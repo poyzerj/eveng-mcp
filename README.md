@@ -23,6 +23,9 @@
   - Device questions (`[confirm]`, `[yes/no]` from reload, clear, copy...) are cancelled and reported unless `confirm=true`, which the assistant only sets after you approve
   - `capture_seconds` collects debug output; `undebug all` always runs afterwards
   - Long pings/traceroutes are stopped with Ctrl+Shift+6; log lines are kept in order
+- `save_lab_configs` — `write memory` on every running node, then export the configs into the lab file so it boots preconfigured
+- `backup_lab_configs` — save every node's running-config to dated files on your PC (`~/eveng-mcp-backups/<lab>/<time>[-label]/`)
+- `reset_lab` — stop, wipe and restart nodes so they boot from the lab's exported configs (asks before doing it)
 - `power_nodes` / `node_power_status` — start, stop, or wipe nodes as the web UI user (POD 0 = admin) by running EVE-NG's `unl_wrapper` over SSH, so they show up in your browser and the console tool can reach them
 
 ## Quick setup (Windows + Claude Desktop)

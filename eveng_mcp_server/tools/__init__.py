@@ -12,6 +12,7 @@ from .node_management import register_node_tools
 from .network_management import register_network_tools
 from .console_tools import register_console_tools
 from .power_tools import register_power_tools
+from .snapshot_tools import register_snapshot_tools
 
 
 def register_tools(mcp: "FastMCP", eveng_client: "EVENGClientWrapper") -> None:
@@ -34,6 +35,9 @@ def register_tools(mcp: "FastMCP", eveng_client: "EVENGClientWrapper") -> None:
 
     # Power tools (start/stop as the web UI user, over SSH)
     register_power_tools(mcp, eveng_client)
+
+    # Snapshot tools (save/backup/reset whole-lab configs)
+    register_snapshot_tools(mcp, eveng_client)
 
 
 __all__ = [

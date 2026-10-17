@@ -26,7 +26,7 @@ logging.getLogger("asyncssh").setLevel(logging.WARNING)
 
 WRAPPER = "/opt/unetlab/wrappers/unl_wrapper"
 LABS_ROOT = "/opt/unetlab/labs"
-ACTIONS = ("start", "stop", "wipe")
+ACTIONS = ("start", "stop", "wipe", "export")
 
 
 class PowerError(Exception):

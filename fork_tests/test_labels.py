@@ -145,3 +145,31 @@ def test_layout_avoids_lines_labels_and_nodes_on_the_real_ospf_lab():
     segs = [(centre(nodes[a]), centre(nodes[b])) for a, _, b, _ in links]
     for box in boxes[len(ends):]:                       # node blocks never sit on a link line
         assert not any(_seg_hits_box(p, q, box, pad=0) for p, q in segs), box
+
+
+def test_vpcs_show_ip_label():
+    from eveng_mcp_server.core.labels import parse_vpcs
+    out = ("NAME        : VPCS[1]\nIP/MASK     : 192.168.10.10/24\nGATEWAY     : 192.168.10.1\n"
+           "MAC         : 00:50:79:66:68:05\n")
+    i = parse_vpcs(out)
+    assert port_label("eth0", i) == ["192.168.10.10/24"]
+    assert node_block(i) == []
+    assert port_label("eth0", parse_vpcs("IP/MASK     : 0.0.0.0/0\n")) == []
+
+
+def test_lab_lock_race_is_retried():
+    from eveng_mcp_server.core.eveng_client import EVENGClientWrapper
+    calls = []
+
+    def flaky():
+        calls.append(1)
+        if len(calls) < 2:
+            raise Exception("Error: unlink(/opt/unetlab/labs/x.unl.lock): No such file or directory")
+        return "ok"
+    assert EVENGClientWrapper._retry_lab_write(flaky) == "ok" and len(calls) == 2
+
+    def other():
+        raise ValueError("something else")
+    import pytest
+    with pytest.raises(ValueError):
+        EVENGClientWrapper._retry_lab_write(other)

@@ -90,6 +90,13 @@ def parse_interfaces(text: str) -> Dict[str, dict]:
     return out
 
 
+def parse_vpcs(text: str) -> Dict[str, dict]:
+    """VPCS `show ip` -> the same shape as parse_interfaces, keyed 'eth0'."""
+    m = re.search(r"IP/MASK\s*:\s*(\d+\.\d+\.\d+\.\d+/\d+)", text)
+    ips = [m.group(1)] if m and not m.group(1).startswith("0.0.0.0") else []
+    return {"eth0": {"ip": ips, "mode": None, "access_vlan": None, "trunk_vlans": None, "shutdown": False}}
+
+
 # ---- label text ----------------------------------------------------------------
 
 def port_label(ifname: str, ifaces: Dict[str, dict]) -> List[str]:

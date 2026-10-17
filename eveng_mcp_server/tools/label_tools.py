@@ -15,7 +15,8 @@ if TYPE_CHECKING:
 from ..config import get_logger
 from ..core.console import ConsoleError, console_port, run_commands
 from ..core.labels import (
-    LABEL_PREFIX, encode_data, layout, node_block, parse_interfaces, port_label, text_object_html,
+    LABEL_PREFIX, encode_data, layout, node_block, parse_interfaces, parse_vpcs, port_label,
+    text_object_html,
 )
 from ..core.power import is_running
 from .power_tools import _pod
@@ -77,10 +78,12 @@ def register_label_tools(mcp: "FastMCP", eveng_client: "EVENGClientWrapper") -> 
             running = [n for n, u in zip(ids, up) if u]
 
             async def read(nid):
+                vpcs = str(nodes[nid].get("template", nodes[nid].get("type", ""))).lower() == "vpcs"
+                cmd = "show ip" if vpcs else "show running-config | section ^interface"
                 try:
-                    t, errs = await run_commands(host, console_port(int(nid), pod),
-                                                 ["show running-config | section ^interface"], timeout=30)
-                    return parse_interfaces(t.split("\n", 1)[1] if "\n" in t else "")
+                    t, errs = await run_commands(host, console_port(int(nid), pod), [cmd], timeout=30)
+                    body = t.split("\n", 1)[1] if "\n" in t else ""
+                    return parse_vpcs(body) if vpcs else parse_interfaces(body)
                 except ConsoleError as e:
                     logger.warning(f"label read failed on node {nid}: {e}")
                     return None
@@ -126,7 +129,7 @@ def register_label_tools(mcp: "FastMCP", eveng_client: "EVENGClientWrapper") -> 
             summary += [f"   {name[len(LABEL_PREFIX):]}: " + " | ".join(lines) for name, _, _, lines in labels]
             if skipped:
                 summary.append("Not running, so not labelled: " + ", ".join(skipped))
-            unread = [nodes[n]["name"] for n, p in parsed.items() if p is None]
+            unread = [nodes[n]["name"] for n, p in parsed.items() if not p]
             if unread:
                 summary.append("Couldn't read config from: " + ", ".join(unread))
             summary.append("Refresh the lab in the browser to see them.")

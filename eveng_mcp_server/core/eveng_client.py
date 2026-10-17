@@ -668,6 +668,20 @@ class EVENGClientWrapper(LoggerMixin):
             self.logger.error("Failed to connect nodes", **log_error(e, {"lab_path": lab_path, "src": src, "dst": dst}))
             raise EVENGAPIError(f"Failed to connect nodes: {str(e)}")
 
+    @staticmethod
+    def _retry_lab_write(fn, attempts: int = 3):
+        """EVE-NG serializes lab-file edits with a .lock file and sometimes trips over
+        its own lock when edits land close together (e.g. the web UI saving the lab):
+        'unlink(... .unl.lock): No such file or directory'. Retry those briefly."""
+        import time
+        for i in range(attempts):
+            try:
+                return fn()
+            except Exception as e:
+                if ".unl.lock" not in str(e) or i == attempts - 1:
+                    raise
+                time.sleep(0.5 * (i + 1))
+
     # ---- canvas text objects (EVE-NG stores their HTML base64-encoded) -------
     async def list_text_objects(self, lab_path: str) -> Dict[str, Any]:
         await self.ensure_connected()
@@ -684,8 +698,9 @@ class EVENGClientWrapper(LoggerMixin):
 
         def _do():
             norm = self.api.normalize_path(lab_path)
-            r = self.client.post(f"/labs{norm}/textobjects",
-                                 data=json.dumps({"name": name, "type": "text", "data": data_b64})) or {}
+            r = self._retry_lab_write(lambda: self.client.post(
+                f"/labs{norm}/textobjects",
+                data=json.dumps({"name": name, "type": "text", "data": data_b64}))) or {}
             new_id = (r.get("data") or {}).get("id")
             return int(new_id) if new_id is not None else None
         return await asyncio.to_thread(_do)
@@ -695,7 +710,8 @@ class EVENGClientWrapper(LoggerMixin):
 
         def _do():
             norm = self.api.normalize_path(lab_path)
-            self.client.put(f"/labs{norm}/textobjects/{int(obj_id)}", data=json.dumps({"data": data_b64}))
+            self._retry_lab_write(lambda: self.client.put(
+                f"/labs{norm}/textobjects/{int(obj_id)}", data=json.dumps({"data": data_b64})))
         await asyncio.to_thread(_do)
 
     async def delete_text_object(self, lab_path: str, obj_id: int) -> None:
@@ -703,7 +719,7 @@ class EVENGClientWrapper(LoggerMixin):
 
         def _do():
             norm = self.api.normalize_path(lab_path)
-            self.client.delete(f"/labs{norm}/textobjects/{int(obj_id)}")
+            self._retry_lab_write(lambda: self.client.delete(f"/labs{norm}/textobjects/{int(obj_id)}"))
         await asyncio.to_thread(_do)
 
     async def set_startup_config(self, lab_path: str, node_id: str, config: str) -> int:

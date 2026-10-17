@@ -30,7 +30,15 @@ class Srv(asyncssh.SSHServer):
 async def handle(proc):
     cmd = proc.command or ""
     print("CMD", cmd, flush=True)
-    if cmd.startswith("( "):
+    if "nohup sh -c" in cmd or cmd.startswith("cat ") or cmd.startswith("rm -f "):
+        # shell mode: run for real, with the wrapper path pointed at a local stand-in
+        import os, sys as _s
+        stub = f"{_s.executable} {os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fake_unl_wrapper.py')}"
+        real = cmd.replace("/opt/unetlab/wrappers/unl_wrapper", stub)
+        p = await asyncio.create_subprocess_shell(real, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+        out_b, _ = await p.communicate()
+        out, rc = out_b.decode(), p.returncode or 0
+    elif cmd.startswith("( "):
         # parallel form used by save_lab_configs: ( <wrapper ...> >/dev/null 2>&1; echo "RC <id> $?" ) & ... wait
         out, rc = "", 0
         for part in re.findall(r"\( (.+?) >/dev/null 2>&1; echo \"RC (\d+) \$\?\" \)", cmd):

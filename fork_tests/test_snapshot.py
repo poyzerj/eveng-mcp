@@ -19,14 +19,44 @@ def _call(tool, **args):
     return content[0].text
 
 
-def test_save_exports_in_parallel_in_one_ssh_session(eve_env, fake_ios2, ssh_env):
+import pytest
+
+
+def _fake_export_env(monkeypatch, tmp_path, seconds):
+    monkeypatch.setenv("FAKE_WRAPPER_LOG", str(tmp_path / "wrapper.log"))
+    monkeypatch.setenv("FAKE_EXPORT_SECONDS", str(seconds))
+    monkeypatch.setenv("EVENG_EXPORT_LOG_DIR", str(tmp_path))
+    return tmp_path / "wrapper.log"
+
+
+@pytest.fixture
+def quick_export(monkeypatch, tmp_path):   # request BEFORE ssh_env so the fake inherits it
+    return _fake_export_env(monkeypatch, tmp_path, 1)
+
+
+@pytest.fixture
+def slow_export(monkeypatch, tmp_path):
+    return _fake_export_env(monkeypatch, tmp_path, 60)
+
+
+def test_save_exports_one_at_a_time_in_background_job(eve_env, fake_ios2, quick_export, ssh_env):
     start = time.time()
     text = _call("save_lab_configs")
     assert "✅ R1: saved and exported" in text
     assert "Skipped (not running): R2, R3" in text
     assert time.time() - start < 30
-    cmds = [l for l in ssh_env["log"].read_text().splitlines() if l.startswith("CMD")]
-    assert len(cmds) == 1 and "-a export -T 3 -D 1" in cmds[0]
+    assert quick_export.read_text().split()[:6] == ["-a", "export", "-T", "3", "-D", "1"]
+    status = _call("export_status")
+    assert "R1: export ok" in status and "Finished." in status
+
+
+def test_slow_export_returns_in_time_and_keeps_going(eve_env, fake_ios2, slow_export, ssh_env):
+    start = time.time()
+    text = _call("save_lab_configs")
+    assert time.time() - start < 55            # never runs into the ~60s remote limit
+    assert "⏳ R1: saved; export still running in the background" in text
+    assert "export_status" in text
+    assert "Still running" in _call("export_status")
 
 
 def test_backup_writes_files(eve_env, fake_ios2, monkeypatch, tmp_path):

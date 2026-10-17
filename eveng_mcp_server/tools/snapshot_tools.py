@@ -14,6 +14,7 @@ import asyncio
 import datetime as dt
 import os
 import re
+import shlex
 from typing import List, Optional, TYPE_CHECKING
 
 from mcp.types import TextContent
@@ -37,6 +38,20 @@ def backup_root() -> str:
 
 def _safe(name: str) -> str:
     return re.sub(r"[^A-Za-z0-9._ -]+", "_", name).strip() or "lab"
+
+
+def _export_log(lab_path: str, pod: int) -> str:
+    base = re.sub(r"[^A-Za-z0-9_-]+", "_", os.path.splitext(os.path.basename(lab_path))[0])
+    folder = os.environ.get("EVENG_EXPORT_LOG_DIR", "/tmp").rstrip("/")
+    return f"{folder}/eveng-mcp-export-{base}-pod{int(pod)}.log"
+
+
+async def _read_export_log(host: str, log: str):
+    """Returns (codes, done, exists) for the background export job's log."""
+    _, out = await ssh_run(host, f"cat {log} 2>/dev/null || echo NO_EXPORT_LOG", timeout=15)
+    if "NO_EXPORT_LOG" in out:
+        return {}, False, False
+    return dict(re.findall(r"RC (\d+) (\d+)", out)), "DONE" in out, True
 
 
 class LabNodesArgs(BaseModel):
@@ -96,24 +111,34 @@ def register_snapshot_tools(mcp: "FastMCP", eveng_client: "EVENGClientWrapper") 
                 else:
                     lines.append(f"⚠️ {name}: write memory failed ({w}); not exported")
             if ok_nodes:
-                # One SSH session; all exports run in parallel on EVE-NG (each one reads the
-                # node's config over its console, which takes several seconds).
-                async def export(nodes):
-                    parts = []
-                    for nid, _ in nodes:
-                        c = build_command("export", pod, int(nid), arguments.lab_path, user)
-                        parts.append(f"( {c} >/dev/null 2>&1; echo \"RC {nid} $?\" ) &")
-                    _, out = await ssh_run(host, " ".join(parts) + " wait", timeout=30)
-                    return dict(re.findall(r"RC (\d+) (\d+)", out))
-                codes = await export(ok_nodes)
-                retry = [(n, nm) for n, nm in ok_nodes if codes.get(str(n)) != "0"]
-                if retry and loop.time() - t0 < 25:   # one retry if it fits under the ~50s budget
+                # EVE-NG's IOSv export script has a hard 15s timeout and takes ~14s per node,
+                # so exports must run ONE AT A TIME (in parallel they all time out). That can
+                # take longer than one tool call may wait, so the sequence runs as a background
+                # job on the EVE-NG host; we wait as long as the budget allows and report.
+                log = _export_log(arguments.lab_path, pod)
+                steps = []
+                for nid, _ in ok_nodes:
+                    c = build_command("export", pod, int(nid), arguments.lab_path, user)
+                    steps.append(f"{c} >/dev/null 2>&1; echo \"RC {nid} $?\"")
+                job = "; ".join(steps) + "; echo DONE"
+                await ssh_run(host, f"rm -f {log}; nohup sh -c {shlex.quote(job)} > {log} 2>&1 < /dev/null &")
+                codes, done = {}, False
+                while loop.time() - t0 < 44:
                     await asyncio.sleep(3)
-                    codes.update(await export(retry))
+                    codes, done, _ = await _read_export_log(host, log)
+                    if done:
+                        break
                 for nid, name in ok_nodes:
                     code = codes.get(str(nid))
-                    lines.append(f"✅ {name}: saved and exported" if code == "0"
-                                 else f"⚠️ {name}: saved on the device, export {'exit ' + code if code else 'gave no result'}")
+                    if code == "0":
+                        lines.append(f"✅ {name}: saved and exported")
+                    elif code is None:
+                        lines.append(f"⏳ {name}: saved; export still running in the background")
+                    else:
+                        lines.append(f"⚠️ {name}: saved on the device, export exit {code}")
+                if not done:
+                    lines.append("Exports continue on EVE-NG one at a time (~15s per router). "
+                                 "Run export_status for the final result, and keep consoles idle until then.")
             lines.append(f"(write memory {t_saved - t0:.0f}s, export {loop.time() - t_saved:.0f}s)")
             if down:
                 lines.append("Skipped (not running): " + ", ".join(n for _, n in down))
@@ -123,6 +148,28 @@ def register_snapshot_tools(mcp: "FastMCP", eveng_client: "EVENGClientWrapper") 
         except Exception as e:
             logger.error(f"save_lab_configs failed: {e}")
             return [TextContent(type="text", text=f"Failed to save lab configs: {e}")]
+
+    @mcp.tool()
+    async def export_status(arguments: LabNodesArgs) -> list[TextContent]:
+        """
+        Show the result of the last save_lab_configs export job for a lab (exports of
+        IOSv routers run one at a time in the background on EVE-NG).
+        """
+        try:
+            pod = _pod(arguments.pod)
+            host = eveng_client.config.eveng.host
+            codes, done, exists = await _read_export_log(host, _export_log(arguments.lab_path, pod))
+            if not exists:
+                return [TextContent(type="text", text="No export job found for this lab.")]
+            if not codes and not done:
+                return [TextContent(type="text", text=f"{arguments.lab_path}\nStill running... (first export not finished yet)")]
+            names = dict(await _resolve_nodes(eveng_client, arguments.lab_path, None))
+            lines = [f"{'✅' if c == '0' else '⚠️'} {names.get(n, 'node ' + n)}: export {'ok' if c == '0' else 'exit ' + c}"
+                     for n, c in codes.items()]
+            lines.append("Finished." if done else "Still running...")
+            return [TextContent(type="text", text=f"{arguments.lab_path}\n" + "\n".join(lines))]
+        except PowerError as e:
+            return [TextContent(type="text", text=f"Power/SSH error: {e}")]
 
     @mcp.tool()
     async def backup_lab_configs(arguments: BackupArgs) -> list[TextContent]:

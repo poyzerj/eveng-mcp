@@ -69,6 +69,8 @@ async def ensure_host_key(host: str, port: int, path: str) -> str:
 
 
 def lab_file(lab_path: str) -> str:
+    if ".." in lab_path.replace("\\", "/").split("/") or "\x00" in lab_path:
+        raise PowerError(f"Invalid lab path: {lab_path}")
     p = "/" + lab_path.strip().lstrip("/")
     if not p.endswith(".unl"):
         p += ".unl"

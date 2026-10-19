@@ -54,8 +54,12 @@ def test_router_port_labels():
 
 def test_switch_port_labels_and_svi_block():
     i = parse_interfaces(SW1)
-    assert port_label("Gi0/0", i) == ["trunk 10,20,30"]
-    assert port_label("Gi0/1", i) == ["access 10"]
+    assert port_label("Gi0/0", i) == []                        # trunks are not labelled
+    assert port_label("Gi0/0", i, to_host=True) == []
+    assert port_label("Gi0/1", i) == []                        # access port to another switch
+    assert port_label("Gi0/1", i, to_host=True) == ["access 10"]   # access port to a PC
+    from eveng_mcp_server.core.labels import is_host
+    assert is_host({"template": "vpcs"}) and not is_host({"template": "viosl2"})
     assert node_block(i) == ["Vlan10 172.16.10.2/24"]          # shutdown SVI without IP is left out
 
 
@@ -135,6 +139,7 @@ def test_layout_avoids_lines_labels_and_nodes_on_the_real_ospf_lab():
     links = [("R1", "Gi0/0", "R2", "Gi0/0"), ("R2", "Gi0/1", "R3", "Gi0/0"), ("R3", "Gi0/1", "R4", "Gi0/0"),
              ("R4", "Gi0/1", "R1", "Gi0/1"), ("R1", "Gi0/2", "SW1", "Gi0/0")]
     ends = [(me, o, port_label(p, P[me])) for a, pa, b, pb in links for me, o, p in ((a, b, pa), (b, a, pb))]
+    ends = [e for e in ends if e[2]]                    # unlabelled ends (trunks) are skipped, as in the tool
     blocks = [(n, node_block(P[n])) for n in nodes if node_block(P[n])]
     exy, bxy = layout(nodes, ends, blocks)
     boxes = [(x, y, *text_size(l)) for (x, y), (_, _, l) in zip(exy, ends)] + \

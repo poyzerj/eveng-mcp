@@ -99,18 +99,26 @@ def parse_vpcs(text: str) -> Dict[str, dict]:
 
 # ---- label text ----------------------------------------------------------------
 
-def port_label(ifname: str, ifaces: Dict[str, dict]) -> List[str]:
-    """Lines for the label at a link end. Routers: IP(s), plus subinterfaces of the
-    port (e.g. router-on-a-stick) as '.10 172.16.10.1/24'. Switches: VLAN mode."""
+HOST_TEMPLATES = ("vpcs", "linux", "win", "docker", "ubuntu")
+
+
+def is_host(node: dict) -> bool:
+    """End hosts (VPCS, Linux, Windows, Docker) rather than routers/switches."""
+    t = str(node.get("template") or node.get("type") or "").lower()
+    return t.startswith(HOST_TEMPLATES)
+
+
+def port_label(ifname: str, ifaces: Dict[str, dict], to_host: bool = False) -> List[str]:
+    """Lines for the label at a link end: the port's IP(s), plus subinterfaces of the
+    port (e.g. router-on-a-stick) as '.10 172.16.10.1/24'. Trunks get no label; an
+    access port gets 'access N' only when it faces an end host (to_host)."""
     key = norm_if(ifname)
     lines: List[str] = []
     base = next((v for k, v in ifaces.items() if norm_if(k) == key), None)
     if base:
         lines += base["ip"]
-        if base["mode"] == "access":
+        if base["mode"] == "access" and to_host:
             lines.append(f"access {base['access_vlan'] or 1}")
-        elif base["mode"] == "trunk":
-            lines.append(f"trunk {base['trunk_vlans'] or 'all'}")
     for k, v in ifaces.items():
         if norm_if(k).startswith(key + ".") and v["ip"] and not v["shutdown"]:
             sub = k.split(".", 1)[1]

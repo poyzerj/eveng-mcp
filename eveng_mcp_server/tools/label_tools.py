@@ -15,8 +15,8 @@ if TYPE_CHECKING:
 from ..config import get_logger
 from ..core.console import ConsoleError, console_port, run_commands
 from ..core.labels import (
-    LABEL_PREFIX, encode_data, layout, node_block, parse_interfaces, parse_vpcs, port_label,
-    text_object_html,
+    LABEL_PREFIX, encode_data, is_host, layout, node_block, parse_interfaces, parse_vpcs,
+    port_label, text_object_html,
 )
 from ..core.power import is_running
 from .power_tools import _pod
@@ -58,8 +58,9 @@ def register_label_tools(mcp: "FastMCP", eveng_client: "EVENGClientWrapper") -> 
     async def label_lab_ips(arguments: LabelArgs) -> list[TextContent]:
         """
         Label the lab canvas with addressing read from the running devices:
-        - next to each cabled port: its IP/prefix (routers, incl. subinterfaces such as
-          router-on-a-stick) or its VLAN mode (switches: 'access 10', 'trunk 10,20,30')
+        - next to each cabled port: its IP/prefix (incl. subinterfaces such as
+          router-on-a-stick); switch access ports facing an end host (e.g. VPCS) get
+          'access 10'; trunks and switch-to-switch access ports get no label
         - under each node: loopbacks and VLAN interface (SVI) IPs, one per line
         Replaces labels from earlier runs; never touches text the user added.
         Close or refresh the lab in the browser afterwards to see them.
@@ -97,7 +98,7 @@ def register_label_tools(mcp: "FastMCP", eveng_client: "EVENGClientWrapper") -> 
                 for me, other, port in ((a, b, l.get("source_label")), (b, a, l.get("destination_label"))):
                     if me not in nodes or other not in nodes or not parsed.get(me) or not port:
                         continue
-                    lines = port_label(port, parsed[me])
+                    lines = port_label(port, parsed[me], to_host=is_host(nodes[other]))
                     if lines:
                         ends.append((me, other, lines))
                         end_names.append(f"{LABEL_PREFIX}{nodes[me]['name']}:{port}")

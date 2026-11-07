@@ -12,6 +12,7 @@ if TYPE_CHECKING:
     from ..core.eveng_client import EVENGClientWrapper
 
 from ..config import get_logger
+from ..core.console import console_port
 from ..core.power import PowerError, build_command, ssh_run, ssh_settings, is_running, wait_state
 
 logger = get_logger("PowerTools")
@@ -54,6 +55,15 @@ async def do_power(eveng_client, lab_path: str, action: str,
         return "No nodes found in that lab."
     lines = []
     for nid, name in targets:
+        if action == "start" and await is_running(host, int(nid), pod):
+            # The console port is already taken. Either this node is already up, or another
+            # lab in this POD has a node with the same ID running (or a deleted node's process
+            # is still alive). Starting now would not take the port, and the console would
+            # reach that other device, so don't.
+            lines.append(f"⚠️ {name} (ID {nid}): console port {console_port(int(nid), pod)} is already in use. "
+                         f"Not started. If this node isn't already running, another lab in POD {pod} has a "
+                         f"node with ID {nid} running - stop that lab first.")
+            continue
         cmd = build_command(action, pod, int(nid), lab_path, user)
         rc, out = await ssh_run(host, cmd)
         if action in ("start", "stop"):

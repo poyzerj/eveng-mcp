@@ -3,7 +3,7 @@
 import json
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 from mcp.types import TextContent, Tool
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 if TYPE_CHECKING:
     from mcp.server.fastmcp import FastMCP
@@ -34,10 +34,11 @@ class ListNodesArgs(BaseModel):
 
 class AddNodeArgs(BaseModel):
     """Arguments for add_node tool."""
+    model_config = ConfigDict(extra="forbid")   # a misspelled field (e.g. 'type') is an error, not silently ignored
     lab_path: str = Field(description="Full path to the lab (e.g., /lab_name.unl)")
     template: str = Field(description="Node template name (e.g., 'vios', 'linux', 'iol')")
     name: str = Field(default="", description="Node name (optional, auto-generated if empty)")
-    node_type: str = Field(default="qemu", description="Node type (qemu, iol, dynamips)")
+    node_type: Optional[str] = Field(default=None, description="Leave empty: the type comes from the template (vpcs -> vpcs, iol -> iol, vios -> qemu). Only set to override: qemu, iol, dynamips, vpcs, docker")
     left: Optional[int] = Field(default=None, description="Pixels from the left of the canvas. Leave empty to auto-place without overlapping.")
     top: Optional[int] = Field(default=None, description="Pixels from the top of the canvas. Leave empty to auto-place without overlapping.")
     delay: int = Field(default=0, description="Seconds to wait before starting node")
@@ -263,10 +264,21 @@ def register_node_tools(mcp: "FastMCP", eveng_client: "EVENGClientWrapper") -> N
                 left = 150 + (existing % 4) * 350 if left is None else left
                 top = 200 + (existing // 4) * 200 if top is None else top
 
+            # The node type must match the template, or EVE-NG launches the wrong thing
+            # (e.g. vpcs sent as qemu fails with "Image not found").
+            want = await eveng_client.template_node_type(arguments.template)
+            node_type = (arguments.node_type or want).lower()
+            if node_type not in eveng_client.NODE_TYPES:
+                return [TextContent(type="text", text=f"Unknown node_type '{arguments.node_type}'. "
+                                    f"Use one of {', '.join(eveng_client.NODE_TYPES)}, or leave it empty.")]
+            if arguments.node_type and node_type != want:
+                return [TextContent(type="text", text=f"Template '{arguments.template}' runs as node type "
+                                    f"'{want}', not '{node_type}'. Leave node_type empty.")]
+
             # Prepare node parameters
             node_params = {
                 "name": arguments.name,
-                "node_type": arguments.node_type,
+                "node_type": node_type,
                 "left": left,
                 "top": top,
                 "delay": arguments.delay,
@@ -289,16 +301,24 @@ def register_node_tools(mcp: "FastMCP", eveng_client: "EVENGClientWrapper") -> N
             # Add node
             result = await eveng_client.add_node(arguments.lab_path, arguments.template, **node_params)
 
+            if not result and arguments.name:
+                return [TextContent(type="text", text=f"A node named '{arguments.name}' already exists in this lab. Nothing was added.")]
             if result.get('status') == 'success':
                 node_id = result.get('data', {}).get('id', 'Unknown')
+                # Report what EVE-NG actually stored, not what was asked for
+                try:
+                    stored = (await eveng_client.get_node(arguments.lab_path, str(node_id))).get("data") or {}
+                except Exception:
+                    stored = {}
                 return [TextContent(
                     type="text",
                     text=f"Successfully added node to lab!\n\n"
                          f"Lab: {arguments.lab_path}\n"
-                         f"Template: {arguments.template}\n"
+                         f"Template: {stored.get('template', arguments.template)}\n"
                          f"Node ID: {node_id}\n"
-                         f"Name: {arguments.name or f'Node{node_id}'}\n"
-                         f"Type: {arguments.node_type}\n"
+                         f"Name: {stored.get('name') or arguments.name or f'Node{node_id}'}\n"
+                         f"Type: {stored.get('type', '(not read back)')}\n"
+                         f"Image: {stored.get('image') or '(none)'}\n"
                          f"Position: ({left}, {top}) px\n\n"
                          f"Node created successfully. Use start_node to power it on."
                 )]
@@ -457,13 +477,25 @@ def register_node_tools(mcp: "FastMCP", eveng_client: "EVENGClientWrapper") -> N
                     text="Not connected to EVE-NG server. Use connect_eveng_server tool first."
                 )]
 
+            # Stop it first: deleting a running node can leave its process holding the
+            # console port, and the next node with this ID would then reach the old device.
+            stop_note = ""
+            try:
+                from .power_tools import _pod, do_power
+                from ..core.power import is_running
+                if await is_running(eveng_client.config.eveng.host, int(arguments.node_id), _pod(None)):
+                    await do_power(eveng_client, arguments.lab_path, "stop", [arguments.node_id])
+                    stop_note = "Stopped it first.\n"
+            except Exception as e:
+                stop_note = f"⚠️ Couldn't stop it first ({e}); if it was running, stop it in the web UI.\n"
+
             # Delete node
             result = await eveng_client.delete_node(arguments.lab_path, arguments.node_id)
 
             if result.get('status') == 'success':
                 return [TextContent(
                     type="text",
-                    text=f"Successfully deleted node {arguments.node_id} from {arguments.lab_path}\n\n"
+                    text=f"Successfully deleted node {arguments.node_id} from {arguments.lab_path}\n{stop_note}\n"
                          f"⚠️  The node has been permanently removed from the lab.\n"
                          f"This action cannot be undone."
                 )]

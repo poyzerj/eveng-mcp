@@ -41,9 +41,26 @@ class H(BaseHTTPRequestHandler):
             return self.send(200, {"code": 200, "status": "success", "data": {"version": "6.2.0-4", "qemu_version": "x"}})
         if p == "/api/list/networks":
             return self.send(200, {"code": 200, "status": "success", "data": {"bridge": "bridge", "pnet0": "Cloud0"}})
+        mt = re.match(r"/api/list/templates/(\w+)$", p)
+        if mt:   # shaped like EVE-NG: qemu templates carry an image list, vpcs has none
+            t = mt.group(1)
+            opts = {"name": {"value": t.upper()}, "icon": {"value": "Router.png"}, "ethernet": {"value": 4}}
+            if t != "vpcs":
+                opts["image"] = {"value": f"{t}-image", "list": {f"{t}-image": f"{t}-image"}}
+            data = {"description": t, "options": opts}
+            if t in ("vpcs", "iol"):
+                data["type"] = t
+            return self.send(200, {"code": 200, "status": "success", "data": data})
         m = re.match(r"/api/labs/(.+?\.unl)(/.*)?$", p)
         if not m: return self.send(404, {"code": 404, "status": "fail", "message": "nope " + method + " " + p})
         sub = m.group(2) or ""
+        if sub == "/nodes" and method == "POST":
+            b = self.body(); nid = max(int(k) for k in LAB["nodes"]) + 1
+            LAB["nodes"][str(nid)] = {"id": nid, **{k: b.get(k) for k in ("name", "type", "template", "image", "left", "top")}}
+            return self.send(201, {"code": 201, "status": "success", "data": {"id": nid}})
+        mg = re.match(r"/nodes/(\d+)$", sub)
+        if mg and method == "GET":
+            return self.send(200, {"code": 200, "status": "success", "data": LAB["nodes"][mg.group(1)]})
         if sub == "/nodes" and method == "GET":
             return self.send(200, {"code": 200, "status": "success", "data": LAB["nodes"]})
         mm = re.match(r"/nodes/(\d+)/interfaces$", sub)

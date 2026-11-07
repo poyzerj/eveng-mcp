@@ -476,6 +476,25 @@ class EVENGClientWrapper(LoggerMixin):
             self.logger.error("Failed to get node by name", **log_error(e, {"lab_path": lab_path, "name": name}))
             raise EVENGAPIError(f"Failed to get node by name: {str(e)}")
 
+    # EVE-NG node types, and the type for templates whose detail doesn't say.
+    NODE_TYPES = ("qemu", "iol", "dynamips", "vpcs", "docker")
+    TEMPLATE_TYPES = {"vpcs": "vpcs", "iol": "iol", "c1710": "dynamips", "c3725": "dynamips",
+                      "c7200": "dynamips", "docker": "docker"}
+
+    async def template_node_type(self, template: str) -> str:
+        """The EVE-NG node type a template launches as (vpcs, iol, dynamips, qemu...).
+        Read from the template's own detail when EVE-NG gives it, else a known map, else qemu."""
+        await self.ensure_connected()
+        try:
+            detail = await asyncio.to_thread(self.api.node_template_detail, template)
+            data = (detail or {}).get("data") or {}
+            t = data.get("type") or ((data.get("options") or {}).get("type") or {}).get("value")
+            if t in self.NODE_TYPES:
+                return t
+        except Exception as e:
+            self.logger.debug("template detail lookup failed", template=template, error=str(e))
+        return self.TEMPLATE_TYPES.get(template.lower(), "qemu")
+
     async def add_node(self, lab_path: str, template: str, **kwargs) -> Dict[str, Any]:
         """Add a node to a lab."""
         await self.ensure_connected()

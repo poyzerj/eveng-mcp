@@ -72,6 +72,11 @@ def parse_interfaces(text: str) -> Dict[str, dict]:
             except ValueError:
                 pass
             continue
+        m = re.match(r"^ipv6 address ([0-9A-Fa-f:]+/\d+)(\s+\S+)?$", s)
+        if m:
+            if not (m.group(2) or "").strip() in ("link-local", "anycast") and not m.group(1).lower().startswith("fe80"):
+                out[cur]["ip"].append(m.group(1).lower())
+            continue
         m = re.match(r"^switchport mode (access|trunk)", s)
         if m:
             out[cur]["mode"] = m.group(1)
@@ -91,9 +96,12 @@ def parse_interfaces(text: str) -> Dict[str, dict]:
 
 
 def parse_vpcs(text: str) -> Dict[str, dict]:
-    """VPCS `show ip` -> the same shape as parse_interfaces, keyed 'eth0'."""
+    """VPCS `show ip` (+ `show ipv6`) -> the same shape as parse_interfaces, keyed 'eth0'."""
     m = re.search(r"IP/MASK\s*:\s*(\d+\.\d+\.\d+\.\d+/\d+)", text)
     ips = [m.group(1)] if m and not m.group(1).startswith("0.0.0.0") else []
+    m6 = re.search(r"GLOBAL SCOPE\s*:\s*([0-9A-Fa-f:]+/\d+)", text)
+    if m6:
+        ips.append(m6.group(1).lower())
     return {"eth0": {"ip": ips, "mode": None, "access_vlan": None, "trunk_vlans": None, "shutdown": False}}
 
 
@@ -141,9 +149,10 @@ def centre(node: dict) -> Tuple[float, float]:
     return float(node.get("left", 0)) + ICON / 2, float(node.get("top", 0)) + ICON / 2
 
 
-def text_size(lines: List[str]) -> Tuple[float, float]:
-    w = max((len(l) for l in lines), default=0) * CHAR_W + 8
-    return w, len(lines) * LINE_H + 4
+def text_size(lines: List[str], font_px: int = 10) -> Tuple[float, float]:
+    k = font_px / 10
+    w = max((len(l) for l in lines), default=0) * CHAR_W * k + 8
+    return w, len(lines) * LINE_H * k + 4
 
 
 def link_label_xy(a: dict, b: dict, lines: List[str]) -> Tuple[int, int]:
@@ -174,14 +183,16 @@ def block_xy(node: dict, lines: List[str]) -> Tuple[int, int]:
 # ---- EVE-NG text object -----------------------------------------------------------
 
 def text_object_html(obj_id: int, left: int, top: int, lines: List[str],
-                     color: str = "rgb(0, 51, 153)") -> str:
+                     color: str = "rgb(0, 51, 153)", background: str = "rgba(255, 255, 255, 0.85)",
+                     font_px: int = 10, bold: bool = False) -> str:
     body = "<br>".join(html.escape(l) for l in lines)
+    line_h = round(LINE_H * font_px / 10)
     return (
         f'<div id="customText{obj_id}" class="customShape customText context-menu jtk-draggable dragstopped ui-selectee" '
         f'data-path="{obj_id}" style="display: inline; position: absolute; left: {left}px; top: {top}px; '
         f'cursor: move; z-index: 1001;">'
-        f'<p align="left" style="vertical-align: top; color: {color}; background-color: rgba(255, 255, 255, 0.85); '
-        f'font-size: 10px; font-weight: normal; line-height: {LINE_H}px; margin: 0px; padding: 1px 3px;">{body}</p></div>'
+        f'<p align="left" style="vertical-align: top; color: {color}; background-color: {background}; '
+        f'font-size: {font_px}px; font-weight: {"bold" if bold else "normal"}; line-height: {line_h}px; margin: 0px; padding: 1px 3px;">{body}</p></div>'
     )
 
 
@@ -212,7 +223,8 @@ def _seg_hits_box(p1, p2, box: Box, pad: float = 4) -> bool:
 
 
 def layout(nodes: Dict[str, dict], ends: List[Tuple[str, str, List[str]]],
-           blocks: List[Tuple[str, List[str]]]) -> Tuple[List[Tuple[int, int]], List[Tuple[int, int]]]:
+           blocks: List[Tuple[str, List[str]]],
+           avoid: Optional[List[Box]] = None) -> Tuple[List[Tuple[int, int]], List[Tuple[int, int]]]:
     """Place link-end labels and node blocks without overlapping each other, nodes or
     link lines. ends: (node, other_node, lines); blocks: (node, lines).
     Returns top-left positions in the same order."""
@@ -229,6 +241,7 @@ def layout(nodes: Dict[str, dict], ends: List[Tuple[str, str, List[str]]],
         for (sx, sy), (tx, ty) in ((p, q), (q, p)):
             mx, my = sx + (tx - sx) / d * 42, sy + (ty - sy) / d * 42
             placed.append((mx - 24, my - 9, 48, 18))
+    placed += list(avoid or [])               # e.g. the user's own notes
 
     def free(box: Box, own_seg=None) -> bool:
         if any(_boxes_overlap(box, b) for b in placed):
@@ -279,3 +292,54 @@ def layout(nodes: Dict[str, dict], ends: List[Tuple[str, str, List[str]]],
         placed.append(box)
         block_pos.append((int(round(box[0])), int(round(box[1]))))
     return end_pos, block_pos
+
+
+# ---- free-text notes -------------------------------------------------------------
+
+NOTE_PREFIX = "note:"
+COLOR_RE = re.compile(r"^(#[0-9a-fA-F]{3,8}|rgba?\([\d\s.,%]+\)|[a-zA-Z]{3,20})$")
+
+
+def safe_color(value: str, default: str) -> str:
+    """Only plain colour values go into the style attribute."""
+    v = (value or "").strip()
+    return v if v and COLOR_RE.match(v) else default
+
+
+def object_box(markup: str) -> Optional[Box]:
+    """Rough box of an existing text object, from its HTML (for avoiding overlaps)."""
+    m = re.search(r"left:\s*(-?\d+)px;\s*top:\s*(-?\d+)px", markup)
+    if not m:
+        return None
+    fm = re.search(r"font-size:\s*(\d+)px", markup)
+    text = re.sub(r"<br\s*/?>", "\n", markup, flags=re.I)
+    lines = [l for l in re.sub(r"<[^>]+>", "", text).split("\n")]
+    w, h = text_size([html.unescape(l) for l in lines], int(fm.group(1)) if fm else 10)
+    return (float(m.group(1)), float(m.group(2)), w, h)
+
+
+def note_xy(node: Optional[dict], where: str, lines: List[str], font_px: int,
+            taken: List[Box], left: Optional[int] = None, top: Optional[int] = None) -> Tuple[int, int]:
+    """Where to put a note: exact left/top if given, else beside a node (below/above/left/right),
+    nudged away from other text objects on the canvas."""
+    w, h = text_size(lines, font_px)
+    if left is not None and top is not None:
+        return int(left), int(top)
+    if node is None:
+        return int(left or 20), int(top or 20)
+    nx, ny = float(node.get("left", 0)), float(node.get("top", 0))
+    cx = nx + ICON / 2
+    where = (where or "below").lower()
+    if where == "above":
+        x, y, step = cx - w / 2, ny - h - 8, (0, -1)
+    elif where == "left":
+        x, y, step = nx - w - 12, ny + ICON / 2 - h / 2, (0, 1)
+    elif where == "right":
+        x, y, step = nx + ICON + 12, ny + ICON / 2 - h / 2, (0, 1)
+    else:   # below, under EVE-NG's own name label
+        x, y, step = cx - w / 2, ny + ICON + 22, (0, 1)
+    for _ in range(40):
+        if not any(_boxes_overlap((x, y, w, h), b) for b in taken):
+            break
+        y += step[1] * 6
+    return int(round(x)), int(round(y))

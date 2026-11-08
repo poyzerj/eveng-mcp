@@ -178,3 +178,63 @@ def test_lab_lock_race_is_retried():
     import pytest
     with pytest.raises(ValueError):
         EVENGClientWrapper._retry_lab_write(other)
+
+
+# ---- IPv6 and free-text notes --------------------------------------------------
+
+def test_ipv6_addresses_are_labelled_link_local_skipped():
+    i = parse_interfaces("interface GigabitEthernet0/0/1\n ip address 10.1.13.1 255.255.255.0\n"
+                         " ipv6 address FE80::1 link-local\n ipv6 address 2001:DB8:ACAD:10D1::1/64\n"
+                         "interface Vlan50\n ip address 10.2.50.1 255.255.255.0\n"
+                         " ipv6 address 2001:DB8:ACAD:1050::D1/64\n")
+    assert port_label("Gi0/0/1", i) == ["10.1.13.1/24", "2001:db8:acad:10d1::1/64"]
+    assert node_block(i) == ["Vlan50 10.2.50.1/24", "Vlan50 2001:db8:acad:1050::d1/64"]
+
+
+def test_vpcs_ipv6_global_scope():
+    from eveng_mcp_server.core.labels import parse_vpcs
+    out = ("IP/MASK     : 10.2.50.50/24\n"
+           "NAME              : VPCS[1]\nLINK-LOCAL SCOPE  : fe80::250:79ff:fe66:6801/64\n"
+           "GLOBAL SCOPE      : 2001:db8:acad:1050::50/64\n")
+    assert port_label("eth0", parse_vpcs(out)) == ["10.2.50.50/24", "2001:db8:acad:1050::50/64"]
+
+
+def _note(**args):
+    from eveng_mcp_server.core.eveng_client import EVENGClientWrapper
+    from eveng_mcp_server.tools.label_tools import register_note_tools
+    mcp = FastMCP("t")
+    register_note_tools(mcp, EVENGClientWrapper())
+    r = asyncio.run(mcp.call_tool(args.pop("_tool", "add_lab_text"), {"arguments": {"lab_path": "/CCNP - Test.unl", **args}}))
+    content = r[0] if isinstance(r, tuple) else r
+    return content[0].text
+
+
+def test_notes_add_place_survive_and_delete(eve_env):
+    from eveng_mcp_server.core.eveng_client import EVENGClientWrapper
+    from eveng_mcp_server.core.labels import NOTE_PREFIX, object_box, _boxes_overlap
+    c = EVENGClientWrapper()
+    assert "Added text" in _note(text="vlan 50\\nGroup50", node="R1", background="#dbeefb")
+    assert "Added text" in _note(text="D2 is acting\nas a L2 switch", node="R1")     # same spot -> nudged
+    assert "Added text" in _note(text="<b>x</b>", left=10, top=10, color="red;}</style><script>")
+    objs = asyncio.run(c.list_text_objects("/CCNP - Test.unl"))
+    notes = {k: base64.b64decode(v["data"]).decode() for k, v in objs.items() if v["name"].startswith(NOTE_PREFIX)}
+    assert len(notes) == 3
+    html_ = list(notes.values())
+    assert "vlan 50<br>Group50" in html_[0] and "#dbeefb" in html_[0]
+    a, b = object_box(html_[0]), object_box(html_[1])
+    assert not _boxes_overlap(a, b, pad=0)                   # second note didn't land on the first
+    assert "&lt;b&gt;" in html_[2] and "<script>" not in html_[2] and "color: #000000" in html_[2]
+    assert "Removed 0 labels" in _call("clear_lab_labels")   # IP-label cleanup leaves notes alone
+    assert "Deleted 3" in _note(_tool="delete_lab_text", all_notes=True)
+    objs = asyncio.run(c.list_text_objects("/CCNP - Test.unl"))
+    assert not [v for v in objs.values() if v["name"].startswith(NOTE_PREFIX)]
+
+
+def test_ip_labels_steer_around_notes():
+    from eveng_mcp_server.core.labels import layout, text_size, _boxes_overlap
+    nodes = {"R1": {"left": 249, "top": 150}, "R2": {"left": 648, "top": 150}}
+    blocks = [("R1", ["Lo0 1.1.1.1/32"])]
+    _, (b0,) = layout(nodes, [], blocks)
+    note = (b0[0], b0[1], 120, 30)                           # a note sitting where the block would go
+    _, (b1,) = layout(nodes, [], blocks, [note])
+    assert not _boxes_overlap((b1[0], b1[1], *text_size(blocks[0][1])), note, pad=0)

@@ -1,0 +1,424 @@
+From 113f970dcb93381d8aba79bf3707d3310d188906 Mon Sep 17 00:00:00 2001
+From: Joe Poyzer <poyzerj@live.com>
+Date: Sun, 8 Nov 2026 19:12:17 +0000
+Subject: [PATCH] Canvas notes: add_lab_text/delete_lab_text, and IPv6 in IP
+ labels
+
+New add_lab_text tool puts free text on the lab canvas (VLAN and group
+names, notes such as "D2 is acting as a L2 switch", titles), beside a
+node (below/above/left/right) or at exact pixels, with colour,
+background, font size and bold options. It is nudged off existing
+text. delete_lab_text removes notes by ID or all at once. Notes are
+kept by clear_lab_labels and label_lab_ips reruns, and label_lab_ips
+now places its labels around them. Text is HTML-escaped and colours
+are restricted to plain colour values.
+
+label_lab_ips now shows global IPv6 addresses next to ports and under
+SVIs/loopbacks (link-local skipped), and reads VPCS IPv6 from
+`show ipv6`.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01TrazMEvGjE9pveiknF3Abo
+---
+ README.md                             |   3 +-
+ eveng_mcp_server/core/labels.py       |  80 +++++++++++++++++--
+ eveng_mcp_server/tools/__init__.py    |   3 +-
+ eveng_mcp_server/tools/label_tools.py | 108 ++++++++++++++++++++++++--
+ fork_tests/test_labels.py             |  60 ++++++++++++++
+ 5 files changed, 237 insertions(+), 17 deletions(-)
+
+diff --git a/README.md b/README.md
+index b8dffb3..9b61b39 100644
+--- a/README.md
++++ b/README.md
+@@ -26,7 +26,8 @@
+ - `save_lab_configs` — `write memory` on every running node, then export the configs into the lab file so it boots preconfigured
+ - `backup_lab_configs` — save every node's running-config to dated files on your PC (`~/eveng-mcp-backups/<lab>/<time>[-label]/`)
+ - `reset_lab` — stop, wipe and restart nodes so they boot from the lab's exported configs (asks before doing it)
+-- `label_lab_ips` — label the canvas from the running devices: IP/prefix (or VLAN mode on switches) next to each cabled port, loopbacks and VLAN interfaces under each node; placed to avoid lines, nodes and each other. `clear_lab_labels` removes them; `list_text_objects` shows what a lab's text objects contain
++- `label_lab_ips` — label the canvas from the running devices: IPv4/IPv6 addresses next to each cabled port (access VLAN on switch ports facing a PC), loopbacks and VLAN interfaces under each node; placed to avoid lines, nodes, notes and each other. `clear_lab_labels` removes them; `list_text_objects` shows what a lab's text objects contain
++- `add_lab_text` — put your own text on the canvas (VLAN/group names, "D2 is acting as a L2 switch", a title), beside a node or at exact pixels, with colour, background, size and bold options. `delete_lab_text` removes notes by ID or all at once
+ - `power_nodes` / `node_power_status` — start, stop, or wipe nodes as the web UI user (POD 0 = admin) by running EVE-NG's `unl_wrapper` over SSH, so they show up in your browser and the console tool can reach them
+ 
+ ## Quick setup (Windows + Claude Desktop)
+diff --git a/eveng_mcp_server/core/labels.py b/eveng_mcp_server/core/labels.py
+index 1664872..291acdf 100644
+--- a/eveng_mcp_server/core/labels.py
++++ b/eveng_mcp_server/core/labels.py
+@@ -72,6 +72,11 @@ def parse_interfaces(text: str) -> Dict[str, dict]:
+             except ValueError:
+                 pass
+             continue
++        m = re.match(r"^ipv6 address ([0-9A-Fa-f:]+/\d+)(\s+\S+)?$", s)
++        if m:
++            if not (m.group(2) or "").strip() in ("link-local", "anycast") and not m.group(1).lower().startswith("fe80"):
++                out[cur]["ip"].append(m.group(1).lower())
++            continue
+         m = re.match(r"^switchport mode (access|trunk)", s)
+         if m:
+             out[cur]["mode"] = m.group(1)
+@@ -91,9 +96,12 @@ def parse_interfaces(text: str) -> Dict[str, dict]:
+ 
+ 
+ def parse_vpcs(text: str) -> Dict[str, dict]:
+-    """VPCS `show ip` -> the same shape as parse_interfaces, keyed 'eth0'."""
++    """VPCS `show ip` (+ `show ipv6`) -> the same shape as parse_interfaces, keyed 'eth0'."""
+     m = re.search(r"IP/MASK\s*:\s*(\d+\.\d+\.\d+\.\d+/\d+)", text)
+     ips = [m.group(1)] if m and not m.group(1).startswith("0.0.0.0") else []
++    m6 = re.search(r"GLOBAL SCOPE\s*:\s*([0-9A-Fa-f:]+/\d+)", text)
++    if m6:
++        ips.append(m6.group(1).lower())
+     return {"eth0": {"ip": ips, "mode": None, "access_vlan": None, "trunk_vlans": None, "shutdown": False}}
+ 
+ 
+@@ -141,9 +149,10 @@ def centre(node: dict) -> Tuple[float, float]:
+     return float(node.get("left", 0)) + ICON / 2, float(node.get("top", 0)) + ICON / 2
+ 
+ 
+-def text_size(lines: List[str]) -> Tuple[float, float]:
+-    w = max((len(l) for l in lines), default=0) * CHAR_W + 8
+-    return w, len(lines) * LINE_H + 4
++def text_size(lines: List[str], font_px: int = 10) -> Tuple[float, float]:
++    k = font_px / 10
++    w = max((len(l) for l in lines), default=0) * CHAR_W * k + 8
++    return w, len(lines) * LINE_H * k + 4
+ 
+ 
+ def link_label_xy(a: dict, b: dict, lines: List[str]) -> Tuple[int, int]:
+@@ -174,14 +183,16 @@ def block_xy(node: dict, lines: List[str]) -> Tuple[int, int]:
+ # ---- EVE-NG text object -----------------------------------------------------------
+ 
+ def text_object_html(obj_id: int, left: int, top: int, lines: List[str],
+-                     color: str = "rgb(0, 51, 153)") -> str:
++                     color: str = "rgb(0, 51, 153)", background: str = "rgba(255, 255, 255, 0.85)",
++                     font_px: int = 10, bold: bool = False) -> str:
+     body = "<br>".join(html.escape(l) for l in lines)
++    line_h = round(LINE_H * font_px / 10)
+     return (
+         f'<div id="customText{obj_id}" class="customShape customText context-menu jtk-draggable dragstopped ui-selectee" '
+         f'data-path="{obj_id}" style="display: inline; position: absolute; left: {left}px; top: {top}px; '
+         f'cursor: move; z-index: 1001;">'
+-        f'<p align="left" style="vertical-align: top; color: {color}; background-color: rgba(255, 255, 255, 0.85); '
+-        f'font-size: 10px; font-weight: normal; line-height: {LINE_H}px; margin: 0px; padding: 1px 3px;">{body}</p></div>'
++        f'<p align="left" style="vertical-align: top; color: {color}; background-color: {background}; '
++        f'font-size: {font_px}px; font-weight: {"bold" if bold else "normal"}; line-height: {line_h}px; margin: 0px; padding: 1px 3px;">{body}</p></div>'
+     )
+ 
+ 
+@@ -212,7 +223,8 @@ def _seg_hits_box(p1, p2, box: Box, pad: float = 4) -> bool:
+ 
+ 
+ def layout(nodes: Dict[str, dict], ends: List[Tuple[str, str, List[str]]],
+-           blocks: List[Tuple[str, List[str]]]) -> Tuple[List[Tuple[int, int]], List[Tuple[int, int]]]:
++           blocks: List[Tuple[str, List[str]]],
++           avoid: Optional[List[Box]] = None) -> Tuple[List[Tuple[int, int]], List[Tuple[int, int]]]:
+     """Place link-end labels and node blocks without overlapping each other, nodes or
+     link lines. ends: (node, other_node, lines); blocks: (node, lines).
+     Returns top-left positions in the same order."""
+@@ -229,6 +241,7 @@ def layout(nodes: Dict[str, dict], ends: List[Tuple[str, str, List[str]]],
+         for (sx, sy), (tx, ty) in ((p, q), (q, p)):
+             mx, my = sx + (tx - sx) / d * 42, sy + (ty - sy) / d * 42
+             placed.append((mx - 24, my - 9, 48, 18))
++    placed += list(avoid or [])               # e.g. the user's own notes
+ 
+     def free(box: Box, own_seg=None) -> bool:
+         if any(_boxes_overlap(box, b) for b in placed):
+@@ -279,3 +292,54 @@ def layout(nodes: Dict[str, dict], ends: List[Tuple[str, str, List[str]]],
+         placed.append(box)
+         block_pos.append((int(round(box[0])), int(round(box[1]))))
+     return end_pos, block_pos
++
++
++# ---- free-text notes -------------------------------------------------------------
++
++NOTE_PREFIX = "note:"
++COLOR_RE = re.compile(r"^(#[0-9a-fA-F]{3,8}|rgba?\([\d\s.,%]+\)|[a-zA-Z]{3,20})$")
++
++
++def safe_color(value: str, default: str) -> str:
++    """Only plain colour values go into the style attribute."""
++    v = (value or "").strip()
++    return v if v and COLOR_RE.match(v) else default
++
++
++def object_box(markup: str) -> Optional[Box]:
++    """Rough box of an existing text object, from its HTML (for avoiding overlaps)."""
++    m = re.search(r"left:\s*(-?\d+)px;\s*top:\s*(-?\d+)px", markup)
++    if not m:
++        return None
++    fm = re.search(r"font-size:\s*(\d+)px", markup)
++    text = re.sub(r"<br\s*/?>", "\n", markup, flags=re.I)
++    lines = [l for l in re.sub(r"<[^>]+>", "", text).split("\n")]
++    w, h = text_size([html.unescape(l) for l in lines], int(fm.group(1)) if fm else 10)
++    return (float(m.group(1)), float(m.group(2)), w, h)
++
++
++def note_xy(node: Optional[dict], where: str, lines: List[str], font_px: int,
++            taken: List[Box], left: Optional[int] = None, top: Optional[int] = None) -> Tuple[int, int]:
++    """Where to put a note: exact left/top if given, else beside a node (below/above/left/right),
++    nudged away from other text objects on the canvas."""
++    w, h = text_size(lines, font_px)
++    if left is not None and top is not None:
++        return int(left), int(top)
++    if node is None:
++        return int(left or 20), int(top or 20)
++    nx, ny = float(node.get("left", 0)), float(node.get("top", 0))
++    cx = nx + ICON / 2
++    where = (where or "below").lower()
++    if where == "above":
++        x, y, step = cx - w / 2, ny - h - 8, (0, -1)
++    elif where == "left":
++        x, y, step = nx - w - 12, ny + ICON / 2 - h / 2, (0, 1)
++    elif where == "right":
++        x, y, step = nx + ICON + 12, ny + ICON / 2 - h / 2, (0, 1)
++    else:   # below, under EVE-NG's own name label
++        x, y, step = cx - w / 2, ny + ICON + 22, (0, 1)
++    for _ in range(40):
++        if not any(_boxes_overlap((x, y, w, h), b) for b in taken):
++            break
++        y += step[1] * 6
++    return int(round(x)), int(round(y))
+diff --git a/eveng_mcp_server/tools/__init__.py b/eveng_mcp_server/tools/__init__.py
+index 9cd2f77..38c0c30 100644
+--- a/eveng_mcp_server/tools/__init__.py
++++ b/eveng_mcp_server/tools/__init__.py
+@@ -13,7 +13,7 @@ from .network_management import register_network_tools
+ from .console_tools import register_console_tools
+ from .power_tools import register_power_tools
+ from .snapshot_tools import register_snapshot_tools
+-from .label_tools import register_label_tools
++from .label_tools import register_label_tools, register_note_tools
+ 
+ 
+ def register_tools(mcp: "FastMCP", eveng_client: "EVENGClientWrapper") -> None:
+@@ -42,6 +42,7 @@ def register_tools(mcp: "FastMCP", eveng_client: "EVENGClientWrapper") -> None:
+ 
+     # Canvas labels (IPs next to links, loopbacks/SVIs under nodes)
+     register_label_tools(mcp, eveng_client)
++    register_note_tools(mcp, eveng_client)
+ 
+ 
+ __all__ = [
+diff --git a/eveng_mcp_server/tools/label_tools.py b/eveng_mcp_server/tools/label_tools.py
+index e6f756d..308ca19 100644
+--- a/eveng_mcp_server/tools/label_tools.py
++++ b/eveng_mcp_server/tools/label_tools.py
+@@ -6,7 +6,7 @@ import base64
+ from typing import List, Optional, TYPE_CHECKING
+ 
+ from mcp.types import TextContent
+-from pydantic import BaseModel, Field
++from pydantic import BaseModel, ConfigDict, Field
+ 
+ if TYPE_CHECKING:
+     from mcp.server.fastmcp import FastMCP
+@@ -15,8 +15,8 @@ if TYPE_CHECKING:
+ from ..config import get_logger
+ from ..core.console import ConsoleError, console_port, run_commands
+ from ..core.labels import (
+-    LABEL_PREFIX, encode_data, is_host, layout, node_block, parse_interfaces, parse_vpcs,
+-    port_label, text_object_html,
++    LABEL_PREFIX, NOTE_PREFIX, encode_data, is_host, layout, node_block, note_xy, object_box,
++    parse_interfaces, parse_vpcs, port_label, safe_color, text_object_html,
+ )
+ from ..core.power import is_running
+ from .power_tools import _pod
+@@ -58,7 +58,7 @@ def register_label_tools(mcp: "FastMCP", eveng_client: "EVENGClientWrapper") ->
+     async def label_lab_ips(arguments: LabelArgs) -> list[TextContent]:
+         """
+         Label the lab canvas with addressing read from the running devices:
+-        - next to each cabled port: its IP/prefix (incl. subinterfaces such as
++        - next to each cabled port: its IPv4 and IPv6 addresses (incl. subinterfaces such as
+           router-on-a-stick); switch access ports facing an end host (e.g. VPCS) get
+           'access 10'; trunks and switch-to-switch access ports get no label
+         - under each node: loopbacks and VLAN interface (SVI) IPs, one per line
+@@ -80,9 +80,9 @@ def register_label_tools(mcp: "FastMCP", eveng_client: "EVENGClientWrapper") ->
+ 
+             async def read(nid):
+                 vpcs = str(nodes[nid].get("template", nodes[nid].get("type", ""))).lower() == "vpcs"
+-                cmd = "show ip" if vpcs else "show running-config | section ^interface"
++                cmds = ["show ip", "show ipv6"] if vpcs else ["show running-config | section ^interface"]
+                 try:
+-                    t, errs = await run_commands(host, console_port(int(nid), pod), [cmd], timeout=30)
++                    t, errs = await run_commands(host, console_port(int(nid), pod), cmds, timeout=30)
+                     body = t.split("\n", 1)[1] if "\n" in t else ""
+                     return parse_vpcs(body) if vpcs else parse_interfaces(body)
+                 except ConsoleError as e:
+@@ -108,7 +108,14 @@ def register_label_tools(mcp: "FastMCP", eveng_client: "EVENGClientWrapper") ->
+                     lines = node_block(ifaces or {})
+                     if lines:
+                         blocks.append((nid, lines))
+-            end_xy, block_xy_ = layout(nodes, ends, blocks)
++            try:   # steer around notes the user (or add_lab_text) put on the canvas
++                existing0 = await eveng_client.list_text_objects(arguments.lab_path)
++                avoid = [b for v in existing0.values()
++                         if not str(v.get("name", "")).startswith(LABEL_PREFIX)
++                         for b in [object_box(_decode(v.get("data", "")))] if b]
++            except Exception:
++                avoid = []
++            end_xy, block_xy_ = layout(nodes, ends, blocks, avoid)
+             labels = [(nm, x, y, e[2]) for nm, (x, y), e in zip(end_names, end_xy, ends)]
+             labels += [(f"{LABEL_PREFIX}{nodes[n]['name']}:block", x, y, ln) for (n, ln), (x, y) in zip(blocks, block_xy_)]
+ 
+@@ -162,3 +169,90 @@ def register_label_tools(mcp: "FastMCP", eveng_client: "EVENGClientWrapper") ->
+             return [TextContent(type="text", text="\n\n".join(out))]
+         except Exception as e:
+             return [TextContent(type="text", text=f"Failed to list text objects: {e}")]
++
++
++class AddTextArgs(BaseModel):
++    model_config = ConfigDict(extra="forbid")
++    lab_path: str = Field(description="Full path to the lab (e.g., /OSPF - Square.unl)")
++    text: str = Field(description="The note. Use a new line (\\n) for each line, e.g. 'vlan 50\\nGroup50'.")
++    node: Optional[str] = Field(default=None, description="Put the note beside this node (name or ID). Leave empty and give left/top for a free spot.")
++    position: str = Field(default="below", description="Beside the node: below, above, left or right")
++    left: Optional[int] = Field(default=None, description="Exact pixels from the left of the canvas (overrides node placement)")
++    top: Optional[int] = Field(default=None, description="Exact pixels from the top of the canvas (overrides node placement)")
++    color: str = Field(default="#000000", description="Text colour, e.g. #000000, red, rgb(0,51,153)")
++    background: str = Field(default="rgba(255, 255, 255, 0.85)", description="Background colour, e.g. #dbeefb for a light blue box, or 'transparent'")
++    font_size: int = Field(default=11, ge=8, le=28, description="Font size in px (8-28)")
++    bold: bool = Field(default=False, description="Bold text")
++
++
++class DeleteTextArgs(BaseModel):
++    lab_path: str = Field(description="Full path to the lab (e.g., /OSPF - Square.unl)")
++    ids: Optional[List[int]] = Field(default=None, description="Text object IDs to delete (from list_text_objects)")
++    all_notes: bool = Field(default=False, description="Delete every note added with add_lab_text (IP labels and your own web-UI text are kept)")
++
++
++def register_note_tools(mcp: "FastMCP", eveng_client: "EVENGClientWrapper") -> None:
++
++    @mcp.tool()
++    async def add_lab_text(arguments: AddTextArgs) -> list[TextContent]:
++        """
++        Put your own text on the lab canvas: VLAN/group names under PCs, notes like
++        'D2 is acting as a L2 switch', a lab title, etc. Multi-line text: one line per \\n.
++        Place it beside a node (below/above/left/right, nudged off other text) or at exact
++        left/top pixels. Notes are kept when label_lab_ips reruns or clear_lab_labels runs,
++        and label_lab_ips steers its IP labels around them.
++        Refresh the lab in the browser to see it.
++        """
++        try:
++            await eveng_client.ensure_connected()
++            lines = [l.rstrip() for l in arguments.text.replace("\\n", "\n").split("\n")]
++            while lines and not lines[-1]:
++                lines.pop()
++            if not lines:
++                return [TextContent(type="text", text="Nothing to add - the text is empty.")]
++            node = None
++            if arguments.node:
++                nid, _ = await asyncio.to_thread(eveng_client._node_name, arguments.lab_path, arguments.node)
++                nodes = (await eveng_client.list_nodes(arguments.lab_path)).get("data") or {}
++                node = next((n for k, n in nodes.items() if str(n.get("id", k)) == str(nid)), None)
++            elif arguments.left is None or arguments.top is None:
++                return [TextContent(type="text", text="Give a node to put the text beside, or both left and top.")]
++            existing = await eveng_client.list_text_objects(arguments.lab_path)
++            taken = [b for v in existing.values() for b in [object_box(_decode(v.get("data", "")))] if b]
++            x, y = note_xy(node, arguments.position, lines, arguments.font_size, taken, arguments.left, arguments.top)
++            color = safe_color(arguments.color, "#000000")
++            bg = safe_color(arguments.background, "rgba(255, 255, 255, 0.85)")
++            next_id = max([int(k) for k in existing] + [0]) + 1
++            name = f"{NOTE_PREFIX}{lines[0][:40]}"
++            mk = lambda i: encode_data(text_object_html(i, x, y, lines, color, bg, arguments.font_size, arguments.bold))
++            got = await eveng_client.add_text_object(arguments.lab_path, name, mk(next_id))
++            if got is not None and got != next_id:
++                await eveng_client.update_text_object(arguments.lab_path, got, mk(got))
++            return [TextContent(type="text", text=f"Added text #{got or next_id} at ({x}, {y}) px: " + " | ".join(lines)
++                                + "\nRefresh the lab in the browser to see it.")]
++        except Exception as e:
++            logger.error(f"add_lab_text failed: {e}")
++            return [TextContent(type="text", text=f"Failed to add text: {e}")]
++
++    @mcp.tool()
++    async def delete_lab_text(arguments: DeleteTextArgs) -> list[TextContent]:
++        """Delete canvas text by ID (see list_text_objects), or every note made with
++        add_lab_text (all_notes=true). Use clear_lab_labels for the IP labels."""
++        try:
++            objs = await eveng_client.list_text_objects(arguments.lab_path)
++            targets = set(arguments.ids or [])
++            if arguments.all_notes:
++                targets |= {int(k) for k, v in objs.items() if str(v.get("name", "")).startswith(NOTE_PREFIX)}
++            if not targets:
++                return [TextContent(type="text", text="Nothing to delete: give ids, or all_notes=true.")]
++            missing = sorted(t for t in targets if str(t) not in objs)
++            gone = []
++            for oid in sorted(targets - set(missing)):
++                await eveng_client.delete_text_object(arguments.lab_path, oid)
++                gone.append(oid)
++            msg = f"Deleted {len(gone)} text object(s)" + (f": {gone}" if gone else "")
++            if missing:
++                msg += f". Not found: {missing}"
++            return [TextContent(type="text", text=msg + ".")]
++        except Exception as e:
++            return [TextContent(type="text", text=f"Failed to delete text: {e}")]
+diff --git a/fork_tests/test_labels.py b/fork_tests/test_labels.py
+index ff9ead0..7d06eb0 100644
+--- a/fork_tests/test_labels.py
++++ b/fork_tests/test_labels.py
+@@ -178,3 +178,63 @@ def test_lab_lock_race_is_retried():
+     import pytest
+     with pytest.raises(ValueError):
+         EVENGClientWrapper._retry_lab_write(other)
++
++
++# ---- IPv6 and free-text notes --------------------------------------------------
++
++def test_ipv6_addresses_are_labelled_link_local_skipped():
++    i = parse_interfaces("interface GigabitEthernet0/0/1\n ip address 10.1.13.1 255.255.255.0\n"
++                         " ipv6 address FE80::1 link-local\n ipv6 address 2001:DB8:ACAD:10D1::1/64\n"
++                         "interface Vlan50\n ip address 10.2.50.1 255.255.255.0\n"
++                         " ipv6 address 2001:DB8:ACAD:1050::D1/64\n")
++    assert port_label("Gi0/0/1", i) == ["10.1.13.1/24", "2001:db8:acad:10d1::1/64"]
++    assert node_block(i) == ["Vlan50 10.2.50.1/24", "Vlan50 2001:db8:acad:1050::d1/64"]
++
++
++def test_vpcs_ipv6_global_scope():
++    from eveng_mcp_server.core.labels import parse_vpcs
++    out = ("IP/MASK     : 10.2.50.50/24\n"
++           "NAME              : VPCS[1]\nLINK-LOCAL SCOPE  : fe80::250:79ff:fe66:6801/64\n"
++           "GLOBAL SCOPE      : 2001:db8:acad:1050::50/64\n")
++    assert port_label("eth0", parse_vpcs(out)) == ["10.2.50.50/24", "2001:db8:acad:1050::50/64"]
++
++
++def _note(**args):
++    from eveng_mcp_server.core.eveng_client import EVENGClientWrapper
++    from eveng_mcp_server.tools.label_tools import register_note_tools
++    mcp = FastMCP("t")
++    register_note_tools(mcp, EVENGClientWrapper())
++    r = asyncio.run(mcp.call_tool(args.pop("_tool", "add_lab_text"), {"arguments": {"lab_path": "/CCNP - Test.unl", **args}}))
++    content = r[0] if isinstance(r, tuple) else r
++    return content[0].text
++
++
++def test_notes_add_place_survive_and_delete(eve_env):
++    from eveng_mcp_server.core.eveng_client import EVENGClientWrapper
++    from eveng_mcp_server.core.labels import NOTE_PREFIX, object_box, _boxes_overlap
++    c = EVENGClientWrapper()
++    assert "Added text" in _note(text="vlan 50\\nGroup50", node="R1", background="#dbeefb")
++    assert "Added text" in _note(text="D2 is acting\nas a L2 switch", node="R1")     # same spot -> nudged
++    assert "Added text" in _note(text="<b>x</b>", left=10, top=10, color="red;}</style><script>")
++    objs = asyncio.run(c.list_text_objects("/CCNP - Test.unl"))
++    notes = {k: base64.b64decode(v["data"]).decode() for k, v in objs.items() if v["name"].startswith(NOTE_PREFIX)}
++    assert len(notes) == 3
++    html_ = list(notes.values())
++    assert "vlan 50<br>Group50" in html_[0] and "#dbeefb" in html_[0]
++    a, b = object_box(html_[0]), object_box(html_[1])
++    assert not _boxes_overlap(a, b, pad=0)                   # second note didn't land on the first
++    assert "&lt;b&gt;" in html_[2] and "<script>" not in html_[2] and "color: #000000" in html_[2]
++    assert "Removed 0 labels" in _call("clear_lab_labels")   # IP-label cleanup leaves notes alone
++    assert "Deleted 3" in _note(_tool="delete_lab_text", all_notes=True)
++    objs = asyncio.run(c.list_text_objects("/CCNP - Test.unl"))
++    assert not [v for v in objs.values() if v["name"].startswith(NOTE_PREFIX)]
++
++
++def test_ip_labels_steer_around_notes():
++    from eveng_mcp_server.core.labels import layout, text_size, _boxes_overlap
++    nodes = {"R1": {"left": 249, "top": 150}, "R2": {"left": 648, "top": 150}}
++    blocks = [("R1", ["Lo0 1.1.1.1/32"])]
++    _, (b0,) = layout(nodes, [], blocks)
++    note = (b0[0], b0[1], 120, 30)                           # a note sitting where the block would go
++    _, (b1,) = layout(nodes, [], blocks, [note])
++    assert not _boxes_overlap((b1[0], b1[1], *text_size(blocks[0][1])), note, pad=0)
+-- 
+2.43.0
+

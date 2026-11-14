@@ -338,33 +338,32 @@ class EVENGClientWrapper(LoggerMixin):
                                 }
                                 labs.append(lab_data)
 
-                    # Get labs from subfolders
-                    folders = data.get('folders', [])
-                    if isinstance(folders, list):
-                        for folder_info in folders:
-                            if isinstance(folder_info, dict):
-                                folder_path = folder_info.get('path', '')
-                                if folder_path and folder_path != '/':
-                                    # Get labs from this subfolder
-                                    try:
-                                        subfolder_response = await asyncio.to_thread(self.api.get_folder, folder_path)
-                                        subfolder_data = subfolder_response.get('data', {})
-                                        subfolder_labs = subfolder_data.get('labs', [])
-
-                                        if isinstance(subfolder_labs, list):
-                                            for lab_info in subfolder_labs:
-                                                if isinstance(lab_info, dict):
-                                                    lab_data = {
-                                                        'name': lab_info.get('file', '').replace('.unl', ''),
-                                                        'path': folder_path,
-                                                        'full_path': lab_info.get('path', ''),
-                                                        'file': lab_info.get('file', ''),
-                                                        'mtime': lab_info.get('mtime', ''),
-                                                        'umtime': lab_info.get('umtime', 0)
-                                                    }
-                                                    labs.append(lab_data)
-                                    except Exception as subfolder_error:
-                                        self.logger.warning(f"Failed to get labs from folder {folder_path}: {subfolder_error}")
+                    # Walk every subfolder, however deep (EVE-NG lists only one level per call)
+                    queue = [f.get('path', '') for f in (data.get('folders') or [])
+                             if isinstance(f, dict) and f.get('name') != '..']
+                    seen = {'/'}
+                    while queue:
+                        folder_path = queue.pop(0)
+                        if not folder_path or folder_path in seen or len(seen) > 500:
+                            continue
+                        seen.add(folder_path)
+                        try:
+                            sub = (await asyncio.to_thread(self.api.get_folder, folder_path)).get('data', {}) or {}
+                        except Exception as subfolder_error:
+                            self.logger.warning(f"Failed to get labs from folder {folder_path}: {subfolder_error}")
+                            continue
+                        for lab_info in sub.get('labs') or []:
+                            if isinstance(lab_info, dict):
+                                labs.append({
+                                    'name': lab_info.get('file', '').replace('.unl', ''),
+                                    'path': folder_path,
+                                    'full_path': lab_info.get('path', ''),
+                                    'file': lab_info.get('file', ''),
+                                    'mtime': lab_info.get('mtime', ''),
+                                    'umtime': lab_info.get('umtime', 0)
+                                })
+                        queue += [f.get('path', '') for f in (sub.get('folders') or [])
+                                  if isinstance(f, dict) and f.get('name') != '..']
 
                 self.logger.debug(f"Listed {len(labs)} labs", path=path)
                 return labs

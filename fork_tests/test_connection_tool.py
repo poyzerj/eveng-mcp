@@ -56,3 +56,27 @@ def test_repo_env_file_beats_the_launcher_environment(monkeypatch, tmp_path):
     c = EVENGConfig(_env_file=str(env))
     assert c.host == "192.168.40.250" and c.username == "claude"   # file wins, env fills the rest
     assert EVENGConfig(_env_file=str(tmp_path / "missing")).host == "192.168.20.250"
+
+
+def test_list_labs_walks_nested_folders():
+    from eveng_mcp_server.core.eveng_client import EVENGClientWrapper
+    tree = {
+        "/": {"labs": [{"file": "Top.unl", "path": "/Top.unl"}],
+              "folders": [{"name": "..", "path": "/"}, {"name": "CCNP", "path": "/CCNP"}]},
+        "/CCNP": {"labs": [], "folders": [{"name": "..", "path": "/"}, {"name": "ENCOR", "path": "/CCNP/ENCOR"}]},
+        "/CCNP/ENCOR": {"labs": [], "folders": [{"name": "..", "path": "/CCNP"}, {"name": "Switching", "path": "/CCNP/ENCOR/Switching"}]},
+        "/CCNP/ENCOR/Switching": {"labs": [{"file": "Lab 06 Enterprise STP.unl",
+                                            "path": "/CCNP/ENCOR/Switching/Lab 06 Enterprise STP.unl"}],
+                                  "folders": [{"name": "..", "path": "/CCNP/ENCOR"}]},
+    }
+
+    class Api:
+        def list_folders(self):
+            return {"data": tree["/"]}
+
+        def get_folder(self, path):
+            return {"data": tree[path]}
+    c = EVENGClientWrapper()
+    c._client, c._api, c._authenticated = object(), Api(), True
+    labs = asyncio.run(c.list_labs("/"))
+    assert [l["full_path"] for l in labs] == ["/Top.unl", "/CCNP/ENCOR/Switching/Lab 06 Enterprise STP.unl"]

@@ -108,3 +108,6 @@ jaeger/
 # Backup files
 *.backup
 *.old
+
+# Files Claude Desktop drops into the repo
+Claude outputs/

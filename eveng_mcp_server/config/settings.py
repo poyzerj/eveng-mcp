@@ -1,9 +1,15 @@
 """Configuration management for EVE-NG MCP Server."""
 
 import os
+from pathlib import Path
 from typing import Optional, List
 from pydantic import Field, field_validator
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# The server's own settings file: <repo>/.env (git-ignored). Values in it win over the
+# environment Claude Desktop passes in, so a stale copy of the Claude config can't
+# point the server at an old address. EVENG_ENV_FILE overrides the location.
+LOCAL_ENV_FILE = Path(os.environ.get("EVENG_ENV_FILE") or Path(__file__).resolve().parents[2] / ".env")
 
 
 class EVENGConfig(BaseSettings):
@@ -37,9 +43,15 @@ class EVENGConfig(BaseSettings):
         """Get the base URL for EVE-NG API."""
         return f"{self.protocol}://{self.host}:{self.port}"
     
-    class Config:
-        env_prefix = "EVENG_"
-        case_sensitive = False
+    model_config = SettingsConfigDict(env_prefix="EVENG_", case_sensitive=False,
+                                      env_file=str(LOCAL_ENV_FILE), env_file_encoding="utf-8",
+                                      extra="ignore")
+
+    @classmethod
+    def settings_customise_sources(cls, settings_cls, init_settings, env_settings,
+                                   dotenv_settings, file_secret_settings):
+        # <repo>/.env first, then the environment from the Claude Desktop config
+        return (init_settings, dotenv_settings, env_settings, file_secret_settings)
 
 
 class MCPConfig(BaseSettings):
@@ -117,6 +129,7 @@ class AppConfig(BaseSettings):
         env_file = ".env"
         env_file_encoding = "utf-8"
         case_sensitive = False
+        extra = "ignore"      # .env also holds EVENG_* keys meant for EVENGConfig
     
     @classmethod
     def load_config(cls, config_file: Optional[str] = None) -> "AppConfig":

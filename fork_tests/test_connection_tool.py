@@ -44,3 +44,15 @@ def test_not_connected_message_explains_and_warns_against_guessing(eve_env, monk
         pass
     msg = c.not_connected_message()
     assert "Reason:" in msg and "NO arguments" in msg and "Don't guess" in msg
+
+
+def test_repo_env_file_beats_the_launcher_environment(monkeypatch, tmp_path):
+    """A stale EVENG_HOST from Claude Desktop is overridden by <repo>/.env."""
+    from eveng_mcp_server.config.settings import EVENGConfig
+    monkeypatch.setenv("EVENG_HOST", "192.168.20.250")      # what a stale config hands over
+    monkeypatch.setenv("EVENG_USERNAME", "claude")
+    env = tmp_path / ".env"
+    env.write_text("EVENG_HOST=192.168.40.250\nEVENG_SSH_KEY=C:/x\n")   # unrelated keys are ignored
+    c = EVENGConfig(_env_file=str(env))
+    assert c.host == "192.168.40.250" and c.username == "claude"   # file wins, env fills the rest
+    assert EVENGConfig(_env_file=str(tmp_path / "missing")).host == "192.168.20.250"

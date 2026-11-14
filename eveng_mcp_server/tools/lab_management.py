@@ -66,7 +66,7 @@ def register_lab_tools(mcp: "FastMCP", eveng_client: "EVENGClientWrapper") -> No
             if not eveng_client.is_connected:
                 return [TextContent(
                     type="text",
-                    text="Not connected to EVE-NG server. Use connect_eveng_server tool first."
+                    text=eveng_client.not_connected_message()
                 )]
 
             # Get labs list
@@ -124,7 +124,7 @@ def register_lab_tools(mcp: "FastMCP", eveng_client: "EVENGClientWrapper") -> No
             if not eveng_client.is_connected:
                 return [TextContent(
                     type="text",
-                    text="Not connected to EVE-NG server. Use connect_eveng_server tool first."
+                    text=eveng_client.not_connected_message()
                 )]
 
             # Create lab
@@ -176,7 +176,7 @@ def register_lab_tools(mcp: "FastMCP", eveng_client: "EVENGClientWrapper") -> No
             if not eveng_client.is_connected:
                 return [TextContent(
                     type="text",
-                    text="Not connected to EVE-NG server. Use connect_eveng_server tool first."
+                    text=eveng_client.not_connected_message()
                 )]
 
             # Get lab details
@@ -360,7 +360,7 @@ def register_lab_tools(mcp: "FastMCP", eveng_client: "EVENGClientWrapper") -> No
             if not eveng_client.is_connected:
                 return [TextContent(
                     type="text",
-                    text="Not connected to EVE-NG server. Use connect_eveng_server tool first."
+                    text=eveng_client.not_connected_message()
                 )]
 
             # Delete lab

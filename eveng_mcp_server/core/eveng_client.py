@@ -30,6 +30,10 @@ class EVENGClientWrapper(LoggerMixin):
         self._api: Optional[EvengApi] = None
         self._authenticated = False
         self._session_lock = asyncio.Lock()
+        self.last_error: Optional[str] = None
+        e = self.config.eveng   # what Claude Desktop's config set, to go back to
+        self.configured = {"host": e.host, "port": e.port, "protocol": e.protocol,
+                           "username": e.username, "password": e.password}
 
         # Disable SSL warnings if configured
         if self.config.security.disable_ssl_warnings:
@@ -91,6 +95,7 @@ class EVENGClientWrapper(LoggerMixin):
                     password=self.config.eveng.password
                 )
                 self._authenticated = True
+                self.last_error = None
                 self._install_reauth()
 
                 # Initialize API wrapper
@@ -106,6 +111,7 @@ class EVENGClientWrapper(LoggerMixin):
                     "Authentication failed",
                     **log_error(e, {"username": self.config.eveng.username})
                 )
+                self.last_error = f"login refused for user '{self.config.eveng.username}': {e}"
                 raise EVENGAuthenticationError(f"Authentication failed: {str(e)}")
             
             except EvengHTTPError as e:
@@ -113,6 +119,7 @@ class EVENGClientWrapper(LoggerMixin):
                     "HTTP error during connection",
                     **log_error(e)
                 )
+                self.last_error = f"HTTP error: {e}"
                 raise EVENGConnectionError(f"Connection failed: {str(e)}")
             
             except Exception as e:
@@ -120,6 +127,7 @@ class EVENGClientWrapper(LoggerMixin):
                     "Unexpected error during connection",
                     **log_error(e)
                 )
+                self.last_error = f"{type(e).__name__}: {e}"
                 raise EVENGConnectionError(f"Unexpected connection error: {str(e)}")
     
     async def disconnect(self) -> None:
@@ -239,6 +247,18 @@ class EVENGClientWrapper(LoggerMixin):
             f"Interface '{label}' not found on node {node_id}. "
             f"Available {media} interfaces: {', '.join(names) or 'none'}"
         )
+
+    def not_connected_message(self) -> str:
+        """Why the tools can't reach EVE-NG, without steering toward guessed credentials."""
+        e = self.config.eveng
+        where = f"{e.protocol}://{e.host}:{e.port} as '{e.username}'"
+        moved = "" if e.host == self.configured["host"] else \
+            f" (NOT the configured {self.configured['host']} - call connect_eveng_server with no arguments to go back to it)"
+        why = f"\nReason: {self.last_error}" if self.last_error else ""
+        return (f"Not connected to EVE-NG at {where}{moved}.{why}\n"
+                "The server logs in by itself with EVENG_HOST / EVENG_USERNAME / EVENG_PASSWORD from the "
+                "Claude Desktop config. Retry with connect_eveng_server and NO arguments. Don't guess an IP or "
+                "credentials (e.g. admin/eve); ask the user to check the config if it keeps failing.")
 
     async def ensure_connected(self) -> None:
         """Ensure client is connected, reconnect if necessary."""

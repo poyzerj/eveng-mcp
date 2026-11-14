@@ -1,6 +1,6 @@
 """Connection management tools for EVE-NG MCP Server."""
 
-from typing import Any, Dict, TYPE_CHECKING
+from typing import Any, Dict, Optional, TYPE_CHECKING
 from mcp.types import TextContent, Tool
 from pydantic import BaseModel, Field
 
@@ -16,12 +16,13 @@ logger = get_logger("ConnectionTools")
 
 
 class ConnectServerArgs(BaseModel):
-    """Arguments for connect_eveng_server tool."""
-    host: str = Field(description="EVE-NG server hostname or IP address")
-    username: str = Field(description="Username for authentication")
-    password: str = Field(description="Password for authentication")
-    port: int = Field(default=80, description="Server port (default: 80)")
-    protocol: str = Field(default="http", description="Protocol (http/https, default: http)")
+    """Arguments for connect_eveng_server tool. All optional: by default the server
+    (re)connects with the settings from the Claude Desktop config."""
+    host: Optional[str] = Field(default=None, description="Leave empty to use EVENG_HOST from the Claude Desktop config. Only set it if the user gave you an address in this conversation - never from memory or a guess.")
+    username: Optional[str] = Field(default=None, description="Leave empty to use the configured user. Only set it if the user gave it in this conversation.")
+    password: Optional[str] = Field(default=None, description="Leave empty to use the configured password. Never guess or use defaults like 'eve'.")
+    port: Optional[int] = Field(default=None, description="Leave empty for the configured port")
+    protocol: Optional[str] = Field(default=None, description="Leave empty for the configured protocol (http/https)")
 
 
 class TestConnectionArgs(BaseModel):
@@ -35,70 +36,41 @@ def register_connection_tools(mcp: "FastMCP", eveng_client: "EVENGClientWrapper"
     @mcp.tool()
     async def connect_eveng_server(arguments: ConnectServerArgs) -> list[TextContent]:
         """
-        Connect to EVE-NG server and authenticate.
-        
-        This tool establishes a connection to the EVE-NG server using the provided
-        credentials. The connection will be maintained for subsequent operations.
+        (Re)connect to EVE-NG. Normally NOT needed: every tool logs in by itself with the
+        settings from the Claude Desktop config. Call it with NO arguments to retry that
+        login (e.g. after EVE-NG rebooted). Pass host/username/password only when the user
+        gives them in this conversation - never from memory or guesses such as admin/eve.
+        If a login with other settings fails, the server goes back to the configured ones.
         """
+        overrides = {k: v for k, v in {"host": arguments.host, "username": arguments.username,
+                                        "password": arguments.password, "port": arguments.port,
+                                        "protocol": arguments.protocol}.items() if v not in (None, "")}
+        config = eveng_client.config.eveng
+        target = {**eveng_client.configured, **overrides}
         try:
-            logger.info(f"Attempting to connect to EVE-NG server at {arguments.host}")
-            
-            # Update client configuration
-            config = eveng_client.config
-            config.eveng.host = arguments.host
-            config.eveng.username = arguments.username
-            config.eveng.password = arguments.password
-            config.eveng.port = arguments.port
-            config.eveng.protocol = arguments.protocol
-            
-            # Connect to server
+            await eveng_client.disconnect()
+            for k, v in target.items():
+                setattr(config, k, v)
             await eveng_client.connect()
-            
-            # Get server status for confirmation
-            status = await eveng_client.get_server_status()
-            
-            result = {
-                "status": "connected",
-                "server": f"{arguments.protocol}://{arguments.host}:{arguments.port}",
-                "username": arguments.username,
-                "server_info": status
-            }
-            
-            logger.info(f"Successfully connected to EVE-NG server at {arguments.host}")
-            
-            return [TextContent(
-                type="text",
-                text=f"Successfully connected to EVE-NG server!\n\n"
-                     f"Server: {arguments.protocol}://{arguments.host}:{arguments.port}\n"
-                     f"Username: {arguments.username}\n"
-                     f"Server Version: {status.get('version', 'Unknown')}\n"
-                     f"Status: {status.get('status', 'Unknown')}"
-            )]
-            
-        except EVENGAuthenticationError as e:
-            logger.error(f"Authentication failed: {e}")
-            return [TextContent(
-                type="text",
-                text=f"Authentication failed: {str(e)}\n\n"
-                     f"Please check your username and password and try again."
-            )]
-            
-        except EVENGConnectionError as e:
-            logger.error(f"Connection failed: {e}")
-            return [TextContent(
-                type="text",
-                text=f"Connection failed: {str(e)}\n\n"
-                     f"Please check the server address and network connectivity."
-            )]
-            
+            src = "settings you gave" if overrides else "the Claude Desktop config"
+            return [TextContent(type="text", text=(
+                f"Connected to EVE-NG at {config.protocol}://{config.host}:{config.port} as "
+                f"'{config.username}' (from {src})."))]
         except Exception as e:
-            logger.error(f"Unexpected error: {e}")
-            return [TextContent(
-                type="text",
-                text=f"Unexpected error occurred: {str(e)}\n\n"
-                     f"Please check your configuration and try again."
-            )]
-    
+            reason = eveng_client.last_error or str(e)
+            note = ""
+            if overrides:      # don't leave the server stuck on settings that don't work
+                for k, v in eveng_client.configured.items():
+                    setattr(config, k, v)
+                note = (f"\nWent back to the configured settings "
+                        f"({config.protocol}://{config.host}:{config.port}, user '{config.username}').")
+            logger.error(f"connect_eveng_server failed: {reason}")
+            return [TextContent(type="text", text=(
+                f"Couldn't connect to EVE-NG at {target['protocol']}://{target['host']}:{target['port']} "
+                f"as '{target['username']}'.\nReason: {reason}{note}\n"
+                "Check EVENG_HOST / EVENG_USERNAME / EVENG_PASSWORD in the Claude Desktop config "
+                "(then fully quit and reopen Claude Desktop). Don't guess credentials."))]
+
     @mcp.tool()
     async def disconnect_eveng_server() -> list[TextContent]:
         """
@@ -146,7 +118,7 @@ def register_connection_tools(mcp: "FastMCP", eveng_client: "EVENGClientWrapper"
             if not eveng_client.is_connected:
                 return [TextContent(
                     type="text",
-                    text="Not connected to EVE-NG server. Use connect_eveng_server tool first."
+                    text=eveng_client.not_connected_message()
                 )]
             
             # Test connection by getting server status
@@ -192,7 +164,7 @@ def register_connection_tools(mcp: "FastMCP", eveng_client: "EVENGClientWrapper"
             if not eveng_client.is_connected:
                 return [TextContent(
                     type="text",
-                    text="Not connected to EVE-NG server. Use connect_eveng_server tool first."
+                    text=eveng_client.not_connected_message()
                 )]
             
             # Get server status and information

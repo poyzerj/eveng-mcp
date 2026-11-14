@@ -106,7 +106,7 @@ def register_network_tools(mcp: "FastMCP", eveng_client: "EVENGClientWrapper") -
             if not eveng_client.is_connected:
                 return [TextContent(
                     type="text",
-                    text="Not connected to EVE-NG server. Use connect_eveng_server tool first."
+                    text=eveng_client.not_connected_message()
                 )]
 
             # Get network types
@@ -161,7 +161,7 @@ def register_network_tools(mcp: "FastMCP", eveng_client: "EVENGClientWrapper") -
             if not eveng_client.is_connected:
                 return [TextContent(
                     type="text",
-                    text="Not connected to EVE-NG server. Use connect_eveng_server tool first."
+                    text=eveng_client.not_connected_message()
                 )]
 
             # Get lab networks
@@ -217,7 +217,7 @@ def register_network_tools(mcp: "FastMCP", eveng_client: "EVENGClientWrapper") -
             if not eveng_client.is_connected:
                 return [TextContent(
                     type="text",
-                    text="Not connected to EVE-NG server. Use connect_eveng_server tool first."
+                    text=eveng_client.not_connected_message()
                 )]
 
             # Create network
@@ -277,7 +277,7 @@ def register_network_tools(mcp: "FastMCP", eveng_client: "EVENGClientWrapper") -
             if not eveng_client.is_connected:
                 return [TextContent(
                     type="text",
-                    text="Not connected to EVE-NG server. Use connect_eveng_server tool first."
+                    text=eveng_client.not_connected_message()
                 )]
 
             # Delete network
@@ -326,7 +326,7 @@ def register_network_tools(mcp: "FastMCP", eveng_client: "EVENGClientWrapper") -
             if not eveng_client.is_connected:
                 return [TextContent(
                     type="text",
-                    text="Not connected to EVE-NG server. Use connect_eveng_server tool first."
+                    text=eveng_client.not_connected_message()
                 )]
 
             # Connect node to network (cloud)
@@ -383,7 +383,7 @@ def register_network_tools(mcp: "FastMCP", eveng_client: "EVENGClientWrapper") -
             if not eveng_client.is_connected:
                 return [TextContent(
                     type="text",
-                    text="Not connected to EVE-NG server. Use connect_eveng_server tool first."
+                    text=eveng_client.not_connected_message()
                 )]
 
             # Connect nodes together
@@ -440,7 +440,7 @@ def register_network_tools(mcp: "FastMCP", eveng_client: "EVENGClientWrapper") -
             if not eveng_client.is_connected:
                 return [TextContent(
                     type="text",
-                    text="Not connected to EVE-NG server. Use connect_eveng_server tool first."
+                    text=eveng_client.not_connected_message()
                 )]
 
             # Get topology

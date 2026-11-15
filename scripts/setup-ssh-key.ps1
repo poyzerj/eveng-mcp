@@ -7,7 +7,7 @@
 #
 # Run in PowerShell:
 #   powershell -ExecutionPolicy Bypass -File .\scripts\setup-ssh-key.ps1
-# Optional: -EveHost 192.168.40.250  -User root
+# Optional: -EveHost <ip-or-fqdn>  -User <ssh-user>   (defaults: the configured EVE-NG host, root)
 # Quit Claude Desktop first (system tray > Quit): it rewrites its config while running.
 
 param(
@@ -93,4 +93,4 @@ Update-ClaudeConfigs {
 }
 Ok "SSH key set, SSH password removed"
 
-Write-Host "`nDone. Fully quit Claude Desktop (system tray > Quit) and reopen it." -ForegroundColor Green
+Write-Host "`nDone. Open Claude Desktop." -ForegroundColor Green

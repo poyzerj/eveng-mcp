@@ -27,43 +27,83 @@
 - `backup_lab_configs` — save every node's running-config to dated files on your PC (`~/eveng-mcp-backups/<lab>/<time>[-label]/`)
 - `reset_lab` — stop, wipe and restart nodes so they boot from the lab's exported configs (asks before doing it)
 - `label_lab_ips` — label the canvas from the running devices: IPv4/IPv6 addresses next to each cabled port (access VLAN on switch ports facing a PC), loopbacks and VLAN interfaces under each node; placed to avoid lines, nodes, notes and each other. `clear_lab_labels` removes them; `list_text_objects` shows what a lab's text objects contain
-- **Local override (optional):** settings in `<repo>/.env` (git-ignored), e.g. `EVENG_HOST=192.168.40.250`, win over the Claude Desktop config. Setup doesn't create it; leave it out unless you need it, or it will hide changes made with **Edit config**
 - `add_lab_text` — put your own text on the canvas (VLAN/group names, "D2 is acting as a L2 switch", a title), beside a node or at exact pixels, with colour, background, size and bold options. `delete_lab_text` removes notes by ID or all at once
 - `power_nodes` / `node_power_status` — start, stop, or wipe nodes as the web UI user (POD 0 = admin) by running EVE-NG's `unl_wrapper` over SSH, so they show up in your browser and the console tool can reach them
 
 ## Quick setup (Windows + Claude Desktop)
 
-1. In EVE-NG create a user for Claude: **Management → User management → Add user** (e.g. `claude`, Administrator).
-   A separate user matters: EVE-NG allows one login per user, so sharing `admin` logs you out of the web UI.
-2. **Quit Claude Desktop** (system tray → Quit). It rewrites its config file while running, which would undo the setup.
-   Then run in PowerShell:
-   ```powershell
-   Set-ExecutionPolicy -Scope Process Bypass
-   irm https://raw.githubusercontent.com/poyzerj/eveng-mcp/master/scripts/setup-windows.ps1 -OutFile setup-windows.ps1
-   .\setup-windows.ps1 -EveHost <eve-ng-ip>
-   ```
-   It installs Git/uv if needed, clones this fork to `C:\eveng-mcp`, finds EVE-NG, asks for the EVE-NG password
-   (hidden), and writes the Claude Desktop config.
-3. Optional, for `power_nodes` (start/stop as the web UI user): set up an SSH key to EVE-NG.
-   ```powershell
-   powershell -ExecutionPolicy Bypass -File .\scripts\setup-ssh-key.ps1
-   ```
-   It creates `~\.ssh\eveng_mcp_ed25519`, installs it on EVE-NG (asks for the password once),
-   pins EVE-NG's host key, and sets `EVENG_SSH_KEY` in the Claude Desktop config with no password stored.
-   The server refuses to connect if EVE-NG's host key ever changes (pinned in `~\.eveng-mcp\known_hosts`).
-4. Reopen Claude Desktop. The server shows under **Settings → Desktop app → Extensions → Local MCP servers**
-   as `eveng-mcp-server`, *Running*. To check the login outside Claude:
-   `powershell -ExecutionPolicy Bypass -File C:\eveng-mcp\scripts\test-connection.ps1`
+### Before you install
 
-**Where Claude Desktop reads its config on Windows.** It depends on the version, so the scripts update every
-location that exists, changing only the `eveng-mcp-server` entry and keeping Claude's own settings (with a backup):
-- `%LOCALAPPDATA%\Claude-Data\claude_<id>\claude_desktop_config.json`: current versions; **Edit config** in the
+- **An EVE-NG user for Claude.** Create it before running setup: in the EVE-NG web UI go to
+  **Management → User management → Add user**, e.g. `claude`, role **Administrator**.
+  Use a separate user, not your own: EVE-NG allows one login per user, so sharing yours would keep
+  logging you out of the web UI. The installer asks for this user's name and password.
+- **Your EVE-NG address** (IP or FQDN), reachable from this PC over HTTPS or HTTP.
+- **Optional, for starting/stopping nodes:** SSH access to the EVE-NG server, normally as `root`
+  (a non-root user needs passwordless `sudo`). You type the SSH password once during setup;
+  it's used to install a key and isn't stored.
+- **Claude Desktop** installed and signed in, then **quit** (system tray → Quit). It rewrites its config
+  while running, which would undo the setup; the installer stops if it's open.
+
+Nothing in this repo points at anyone's lab: the installer asks for every address and credential, and
+they stay on your PC in your Claude Desktop config.
+
+### Install
+
+In PowerShell:
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass
+irm https://raw.githubusercontent.com/poyzerj/eveng-mcp/master/scripts/setup-windows.ps1 -OutFile setup-windows.ps1
+.\setup-windows.ps1
+```
+It asks for:
+1. **EVE-NG server address**: an IP or FQDN
+2. **EVE-NG user for Claude** (default `claude`) and its **password** (hidden as you type)
+3. **Whether to set up SSH** for starting/stopping nodes, and the **SSH user** (default `root`)
+
+Then it installs Git and uv if needed, clones this repo to `C:\eveng-mcp`, checks the login (HTTPS first,
+with certificate checks on if the certificate is trusted, otherwise HTTP), writes the Claude Desktop
+config, and, if you chose SSH, runs `scripts\setup-ssh-key.ps1`. That creates `~\.ssh\eveng_mcp_ed25519`,
+installs it on EVE-NG (you type the SSH password once), and pins EVE-NG's host key in
+`~\.eveng-mcp\known_hosts`; the server refuses to connect if that key ever changes.
+
+Open Claude Desktop. The server shows under **Settings → Desktop app → Extensions → Local MCP servers** as
+`eveng-mcp-server`, *Running*. In a new chat try *"List my EVE-NG labs."* To check the login outside Claude:
+`powershell -ExecutionPolicy Bypass -File C:\eveng-mcp\scripts\test-connection.ps1`
+
+To change the address or password later, use **Edit config** on that page, then quit and reopen Claude Desktop.
+Rerunning `setup-windows.ps1` also works and keeps your SSH key settings.
+
+### Using an FQDN and HTTPS
+
+The server uses the same address for the web API (HTTPS/HTTP), SSH (port 22) and the node consoles
+(ports 32768 and up). If your FQDN resolves to a public IP that only forwards HTTPS, the web calls work but
+starting nodes and consoles don't. Make the name resolve to EVE-NG's **inside** address on the PCs that run Claude:
+- **Split DNS** on your internal DNS server, e.g. on Windows DNS create a zone for just that name
+  (not the whole domain) with an A record for it:
+  ```powershell
+  Add-DnsServerPrimaryZone -Name "eve.example.com" -ReplicationScope Forest
+  Add-DnsServerResourceRecordA -ZoneName "eve.example.com" -Name "@" -IPv4Address <inside-ip>
+  ```
+- Or, on a PC that doesn't use that DNS server, a **hosts file** line (PowerShell as administrator):
+  ```powershell
+  Add-Content -Path "$env:windir\System32\drivers\etc\hosts" -Value "`r`n<inside-ip>`teve.example.com"
+  ipconfig /flushdns
+  ```
+`Resolve-DnsName eve.example.com` should then return the inside address.
+
+### Where Claude Desktop reads its config on Windows
+
+It depends on the version, so the scripts update every location that exists, changing only the
+`eveng-mcp-server` entry and keeping Claude's own settings (with a backup):
+- `%LOCALAPPDATA%\Claude-Data\claude_<id>\claude_desktop_config.json`: current versions; **Edit config** on the
   Local MCP servers page opens this one
 - `%LOCALAPPDATA%\Packages\Claude_<id>\LocalCache\Roaming\Claude\`: Microsoft Store installs
 - `%LOCALAPPDATA%\Claude\` and `%APPDATA%\Claude\`: older versions
 
-If the server keeps using an old address after you edited the config, you edited a file Claude Desktop
-doesn't read. Use **Edit config** on that page, or put `EVENG_HOST=<ip>` in `C:\eveng-mcp\.env`, which wins over the config.
+If the server keeps using an old address after you edited a config file, you edited one Claude Desktop
+doesn't read; use **Edit config** instead. A `C:\eveng-mcp\.env` file (git-ignored) with lines like
+`EVENG_HOST=<address>` overrides the config if you ever need it; setup doesn't create one.
 
 **Console notes:** `run_node_commands` reaches nodes started from the web UI by the `admin` user (EVE-NG POD 0).
 Set `EVENG_CONSOLE_POD` in the server's env to use another user's running nodes. Use `power_nodes` to start/stop

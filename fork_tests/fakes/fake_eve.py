@@ -13,6 +13,12 @@ LAB = {
                for n in ("1", "2", "3")},
 }
 
+def eths(ifs):
+    """IOL nodes list their interfaces as a dict keyed by port index, qemu nodes as a list."""
+    e = ifs["ethernet"]
+    return list(e.values()) if isinstance(e, dict) else e
+
+
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
     def send(self, code, obj, cookie=None):
@@ -35,6 +41,10 @@ class H(BaseHTTPRequestHandler):
             return self.send(200, {"code": 200, "status": "success", "message": "User logged in"}, sid)
         if p == "/test/expire":
             SESSIONS.clear(); return self.send(200, {"ok": True})
+        if p == "/test/iol_dup":   # an old IOL router that shares the name R1 with node 1
+            LAB["nodes"]["4"] = {"id": 4, "name": "R1", "template": "iol", "type": "iol", "left": 100, "top": 100}
+            LAB["ifaces"]["4"] = {"ethernet": {str(i): {"name": f"e0/{i}", "network_id": 0} for i in range(4)}, "serial": []}
+            return self.send(200, {"ok": True})
         if not self.authed():
             return self.send(412, {"code": 412, "status": "unauthorized", "message": "User is not authenticated or session timed out (90032)."})
         if p == "/api/status":
@@ -68,12 +78,13 @@ class H(BaseHTTPRequestHandler):
             return self.send(200, {"code": 200, "status": "success", "data": LAB["ifaces"][mm.group(1)]})
         if mm and method == "PUT":
             for idx, net in self.body().items():
-                LAB["ifaces"][mm.group(1)]["ethernet"][int(idx)]["network_id"] = int(net)
+                e = LAB["ifaces"][mm.group(1)]["ethernet"]
+                (e[str(idx)] if isinstance(e, dict) else e[int(idx)])["network_id"] = int(net)
             return self.send(201, {"code": 201, "status": "success", "message": "Lab has been saved"})
         if sub == "/topology" and method == "GET":
             by_net = {}
             for nid, ifs in LAB["ifaces"].items():
-                for i in ifs["ethernet"]:
+                for i in eths(ifs):
                     if i["network_id"]:
                         by_net.setdefault(i["network_id"], []).append((nid, i["name"]))
             links = [{"type": "ethernet", "source": f"node{a[0]}", "source_type": "node", "source_label": a[1],

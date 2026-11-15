@@ -344,7 +344,8 @@ def register_network_tools(mcp: "FastMCP", eveng_client: "EVENGClientWrapper") -
                          f"Lab: {arguments.lab_path}\n"
                          f"Node: {arguments.node_id}\n"
                          f"Interface: {arguments.node_interface}\n"
-                         f"Network: {arguments.network_id}\n\n"
+                         f"Network: {arguments.network_id}\n"
+                         f"Link: {result.get('link', '')}\n\n"
                          f"Connection established successfully."
                          + await _running_warning(arguments.lab_path, [arguments.node_id])
                 )]
@@ -395,13 +396,12 @@ def register_network_tools(mcp: "FastMCP", eveng_client: "EVENGClientWrapper") -
                 arguments.dst_interface
             )
 
-            if result:  # connect_node_to_node returns boolean
+            if result and result.get("status") == "success":
                 return [TextContent(
                     type="text",
                     text=f"Successfully connected nodes!\n\n"
                          f"Lab: {arguments.lab_path}\n"
-                         f"Source Node: {arguments.src_node_id} ({arguments.src_interface})\n"
-                         f"Destination Node: {arguments.dst_node_id} ({arguments.dst_interface})\n\n"
+                         f"Link: {result.get('link', '')}\n\n"
                          f"Point-to-point connection established successfully."
                          + await _running_warning(arguments.lab_path, [arguments.src_node_id, arguments.dst_node_id])
                 )]

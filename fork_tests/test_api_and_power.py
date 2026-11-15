@@ -25,12 +25,13 @@ def _client():
 
 def _ifaces(c, node):
     data = c.api.get_node_interfaces(LAB, node)["data"]["ethernet"]
+    data = data.values() if isinstance(data, dict) else data     # IOL: dict keyed by port index
     return {i["name"]: i["network_id"] for i in data}
 
 
 def test_link_by_node_id_and_short_interface_names(eve_env):
     c = _client()
-    assert run(c.connect_node_to_node(LAB, "1", "Gi0/0", "2", "Gi0/0")) is True
+    assert run(c.connect_node_to_node(LAB, "1", "Gi0/0", "2", "Gi0/0"))["status"] == "success"
     assert _ifaces(c, "1")["Gi0/0"] == _ifaces(c, "2")["Gi0/0"] != 0
 
 
@@ -39,7 +40,26 @@ def test_long_and_lowercase_interface_names_and_session_expiry(eve_env):
     run(c.connect())
     # kill every session, like EVE-NG's idle timeout or a web UI login as the same user
     urllib.request.urlopen(f"http://127.0.0.1:{os.environ['EVENG_PORT']}/test/expire")
-    assert run(c.connect_node_to_node(LAB, "R2", "GigabitEthernet0/1", "3", "gi0/0")) is True
+    assert run(c.connect_node_to_node(LAB, "R2", "GigabitEthernet0/1", "3", "gi0/0"))["status"] == "success"
+
+
+def test_duplicate_names_and_iol_interfaces(eve_env):
+    """Swapping IOL routers for vIOS: old and new both named R1, and IOL lists its
+    interfaces as a dict. The SDK picked the wrong R1 and crashed with
+    'string indices must be integers'."""
+    c = _client()
+    urllib.request.urlopen(f"http://127.0.0.1:{os.environ['EVENG_PORT']}/test/iol_dup")
+    with pytest.raises(Exception) as e:                      # a name that matches two nodes is refused
+        run(c.connect_node_to_node(LAB, "R1", "Gi0/0", "R2", "Gi0/0"))
+    assert "Several nodes are named 'R1' (IDs 1, 4)" in str(e.value)
+    r = run(c.connect_node_to_node(LAB, "1", "Gi0/0", "R2", "Gi0/0"))   # by ID: the vIOS R1
+    assert r["status"] == "success" and "R1 (ID 1) Gi0/0" in r["link"]
+    assert _ifaces(c, "1")["Gi0/0"] == _ifaces(c, "2")["Gi0/0"] != 0
+    assert _ifaces(c, "4")["e0/0"] == 0                      # the old IOL R1 was left alone
+    r = run(c.connect_node_to_node(LAB, "4", "e0/1", "3", "Gi0/0"))     # IOL dict interfaces work too
+    assert r["status"] == "success" and _ifaces(c, "4")["e0/1"] == _ifaces(c, "3")["Gi0/0"] != 0
+    nets = c.api.list_lab_networks(LAB)["data"]                # one bridge per link, hidden
+    assert len(nets) == 2
 
 
 def test_bad_interface_lists_real_ones(eve_env):

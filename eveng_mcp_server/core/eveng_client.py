@@ -188,11 +188,53 @@ class EVENGClientWrapper(LoggerMixin):
         for nid, n in nodes.items():
             if str(nid) == ref or str(n.get("id")) == ref:
                 return str(n.get("id", nid)), n["name"]
-        for nid, n in nodes.items():
-            if n.get("name", "").lower() == ref.lower():
-                return str(n.get("id", nid)), n["name"]
+        hits = [(str(n.get("id", nid)), n["name"]) for nid, n in nodes.items()
+                if n.get("name", "").lower() == ref.lower()]
+        if len(hits) == 1:
+            return hits[0]
+        if len(hits) > 1:   # e.g. old and new routers both named R1 while swapping images
+            raise ValueError(f"Several nodes are named '{ref}' (IDs {', '.join(h[0] for h in hits)}) in "
+                             f"{lab_path}. Use the node ID instead of the name.")
         names = ", ".join(f"{n.get('id', k)}={n.get('name')}" for k, n in nodes.items())
         raise ValueError(f"Node '{ref}' not found in {lab_path}. Nodes: {names or 'none'}")
+
+    def _network_id(self, lab_path: str, ref: str) -> tuple[str, str]:
+        """Return (network_id, network_name) for a network given its ID or name."""
+        nets = (self.api.list_lab_networks(lab_path) or {}).get("data") or {}
+        ref = str(ref).strip()
+        for nid, n in nets.items():
+            if str(nid) == ref or str(n.get("id")) == ref:
+                return str(n.get("id", nid)), n.get("name", "")
+        hits = [(str(n.get("id", nid)), n.get("name", "")) for nid, n in nets.items()
+                if n.get("name", "").lower() == ref.lower()]
+        if len(hits) == 1:
+            return hits[0]
+        if len(hits) > 1:
+            raise ValueError(f"Several networks are named '{ref}' (IDs {', '.join(h[0] for h in hits)}). Use the network ID.")
+        names = ", ".join(f"{n.get('id', k)}={n.get('name')}" for k, n in nets.items())
+        raise ValueError(f"Network '{ref}' not found in {lab_path}. Networks: {names or 'none'}")
+
+    def _interface_index(self, lab_path: str, node_id: str, label: str,
+                         media: str = "ethernet") -> tuple[str, str]:
+        """(port index, EVE-NG label) for an interface on a node. Handles both shapes EVE-NG
+        returns: a list for qemu nodes (vIOS...) and a dict keyed by index for IOL nodes."""
+        data = (self.api.get_node_interfaces(lab_path, node_id) or {}).get("data") or {}
+        ifaces = data.get(media) or []
+        pairs = list(ifaces.items()) if isinstance(ifaces, dict) else list(enumerate(ifaces))
+        pairs = [(str(k), (v or {}).get("name", "")) for k, v in pairs if isinstance(v, dict)]
+        for exact in (lambda n: n == label, lambda n: n.lower() == str(label).lower(),
+                      lambda n: self._norm_if(n) == self._norm_if(label)):
+            for idx, name in pairs:
+                if exact(name):
+                    return idx, name
+        raise ValueError(
+            f"Interface '{label}' not found on node {node_id}. "
+            f"Available {media} interfaces: {', '.join(n for _, n in pairs) or 'none'}")
+
+    def _attach(self, lab_path: str, node_id: str, port_index: str, net_id: str) -> None:
+        norm = self.api.normalize_path(lab_path)
+        self._retry_lab_write(lambda: self.client.put(
+            f"/labs{norm}/nodes/{node_id}/interfaces", data=json.dumps({str(port_index): str(net_id)})))
 
     def _network_name(self, lab_path: str, ref: str) -> str:
         """Return the network name for a network given its ID or name."""
@@ -229,24 +271,7 @@ class EVENGClientWrapper(LoggerMixin):
                          media: str = "ethernet") -> str:
         """Map a user-friendly interface name (Gi0/0, GigabitEthernet0/0, e0/1,
         port1) to the exact label EVE-NG uses for this node."""
-        data = (self.api.get_node_interfaces(lab_path, node_id) or {}).get("data") or {}
-        ifaces = data.get(media) or []
-        if isinstance(ifaces, dict):
-            ifaces = list(ifaces.values())
-        names = [i.get("name", "") for i in ifaces]
-        if label in names:
-            return label
-        for n in names:
-            if n.lower() == str(label).lower():
-                return n
-        want = self._norm_if(label)
-        for n in names:
-            if self._norm_if(n) == want:
-                return n
-        raise ValueError(
-            f"Interface '{label}' not found on node {node_id}. "
-            f"Available {media} interfaces: {', '.join(names) or 'none'}"
-        )
+        return self._interface_index(lab_path, node_id, label, media)[1]
 
     def not_connected_message(self) -> str:
         """Why the tools can't reach EVE-NG, without steering toward guessed credentials."""
@@ -678,9 +703,11 @@ class EVENGClientWrapper(LoggerMixin):
         try:
             def _do():
                 nid, sname = self._node_name(lab_path, src)
-                label = self._interface_label(lab_path, nid, src_label)
-                dname = self._network_name(lab_path, dst)
-                return self.api.connect_node_to_cloud(lab_path, sname, label, dname)
+                idx, label = self._interface_index(lab_path, nid, src_label)
+                net_id, dname = self._network_id(lab_path, dst)
+                self._attach(lab_path, nid, idx, net_id)
+                return {"status": "success", "network_id": net_id,
+                        "link": f"{sname} (ID {nid}) {label} <-> network {dname} (ID {net_id})"}
             result = await asyncio.to_thread(_do)
             self.logger.info("Connected node to cloud", lab_path=lab_path, src=src, dst=dst)
             return result
@@ -694,11 +721,25 @@ class EVENGClientWrapper(LoggerMixin):
 
         try:
             def _do():
+                # Work by node ID throughout: the SDK looks nodes up by name (wrong node when two
+                # share a name) and can't read IOL interface lists (dict, not list).
                 sid, sname = self._node_name(lab_path, src)
                 did, dname = self._node_name(lab_path, dst)
-                slabel = self._interface_label(lab_path, sid, src_label)
-                dlabel = self._interface_label(lab_path, did, dst_label)
-                return self.api.connect_node_to_node(lab_path, sname, slabel, dname, dlabel)
+                if sid == did:
+                    raise ValueError("Source and destination are the same node.")
+                sidx, slabel = self._interface_index(lab_path, sid, src_label)
+                didx, dlabel = self._interface_index(lab_path, did, dst_label)
+                net = self._retry_lab_write(lambda: self.api.add_lab_network(
+                    lab_path, network_type="bridge", visibility="1", name=f"{sname}-{dname}-{sid}-{did}-{sidx}"))
+                net_id = (net or {}).get("data", {}).get("id")
+                if not net_id:
+                    raise ValueError(f"EVE-NG didn't create the link's bridge: {net}")
+                self._attach(lab_path, sid, sidx, net_id)
+                self._attach(lab_path, did, didx, net_id)
+                # a point-to-point bridge is hidden, so the canvas shows a plain cable
+                self._retry_lab_write(lambda: self.api.edit_lab_network(lab_path, net_id, data={"visibility": "0"}))
+                return {"status": "success", "network_id": net_id,
+                        "link": f"{sname} (ID {sid}) {slabel} <-> {dname} (ID {did}) {dlabel}"}
             result = await asyncio.to_thread(_do)
             self.logger.info("Connected nodes", lab_path=lab_path, src=src, dst=dst)
             return result

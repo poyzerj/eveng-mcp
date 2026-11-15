@@ -1,9 +1,10 @@
 # Test the EVE-NG MCP server's login with the exact settings Claude Desktop uses.
 # Reads claude_desktop_config.json, never prints the password.
-$cfgPath = "$env:APPDATA\Claude\claude_desktop_config.json"
-$cfg = Get-Content $cfgPath -Raw | ConvertFrom-Json
-$srv = $cfg.mcpServers.'eveng-mcp-server'
-if (-not $srv) { Write-Host "No 'eveng-mcp-server' entry in $cfgPath" -ForegroundColor Red; exit 1 }
+. (Join-Path $PSScriptRoot "claude-config.ps1")
+$found = Get-EvengServerEntry
+if (-not $found) { Write-Host "No 'eveng-mcp-server' entry in any Claude Desktop config:`n  $((Get-ClaudeConfigFiles) -join "`n  ")" -ForegroundColor Red; exit 1 }
+$cfgPath = $found.File
+$srv = $found.Server
 foreach ($p in $srv.env.PSObject.Properties) { Set-Item -Path "env:$($p.Name)" -Value $p.Value }
 
 $eveHost = $env:EVENG_HOST

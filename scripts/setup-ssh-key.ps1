@@ -7,7 +7,8 @@
 #
 # Run in PowerShell:
 #   powershell -ExecutionPolicy Bypass -File .\scripts\setup-ssh-key.ps1
-# Optional: -EveHost 192.168.20.250  -User root
+# Optional: -EveHost 192.168.40.250  -User root
+# Quit Claude Desktop first (system tray > Quit): it rewrites its config while running.
 
 param(
     [string]$EveHost = "",
@@ -19,12 +20,11 @@ function Step($m) { Write-Host "`n==> $m" -ForegroundColor Cyan }
 function Ok($m)   { Write-Host "    $m" -ForegroundColor Green }
 
 # ---- find the Claude Desktop config(s) and current settings -----------------
-$cfgFiles = @("$env:APPDATA\Claude\claude_desktop_config.json")
-$cfgFiles += (Get-ChildItem "$env:LOCALAPPDATA\Packages\Claude_*\LocalCache\Roaming\Claude\claude_desktop_config.json" -ErrorAction SilentlyContinue).FullName
-$cfgFiles = $cfgFiles | Where-Object { $_ -and (Test-Path $_) }
-if (-not $cfgFiles) { throw "No Claude Desktop config found. Run scripts\setup-windows.ps1 first." }
-
-$env0 = (Get-Content $cfgFiles[0] -Raw | ConvertFrom-Json).mcpServers.'eveng-mcp-server'.env
+. (Join-Path $PSScriptRoot "claude-config.ps1")
+Assert-ClaudeClosed
+$found = Get-EvengServerEntry
+if (-not $found) { throw "No 'eveng-mcp-server' entry in any Claude Desktop config. Run scripts\setup-windows.ps1 first." }
+$env0 = $found.Server.env
 if (-not $EveHost) { $EveHost = $env0.EVENG_HOST }
 if (-not $User)    { $User = $(if ($env0.EVENG_SSH_USER) { $env0.EVENG_SSH_USER } else { "root" }) }
 if (-not $EveHost) { throw "EVE-NG host unknown. Rerun with -EveHost <ip>." }
@@ -82,15 +82,15 @@ if ($line) {
 
 # ---- 4. Claude Desktop config ------------------------------------------------
 Step "Updating Claude Desktop config"
-foreach ($f in $cfgFiles) {
-    Copy-Item $f "$f.bak-$(Get-Date -Format yyyyMMdd-HHmmss)"
-    $c = Get-Content $f -Raw | ConvertFrom-Json
-    $e = $c.mcpServers.'eveng-mcp-server'.env
+Update-ClaudeConfigs {
+    param($e0)
+    if (-not $e0) { $e0 = $found.Server }        # a config location that didn't have the entry yet
+    $e = $e0.env
     $e | Add-Member -Force EVENG_SSH_USER $User
     $e | Add-Member -Force EVENG_SSH_KEY $key
     $e.PSObject.Properties.Remove("EVENG_SSH_PASSWORD")
-    [IO.File]::WriteAllText($f, ($c | ConvertTo-Json -Depth 20), (New-Object Text.UTF8Encoding($false)))
-    Ok "Updated $f (password removed)"
+    $e0
 }
+Ok "SSH key set, SSH password removed"
 
 Write-Host "`nDone. Fully quit Claude Desktop (system tray > Quit) and reopen it." -ForegroundColor Green

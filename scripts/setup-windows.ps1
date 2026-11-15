@@ -2,12 +2,16 @@
 # Rebuilds the EVE-NG MCP server for Claude Desktop on a fresh Windows install.
 #   1. Installs Git and uv (if missing)
 #   2. Clones the poyzerj/eveng-mcp fork (all fixes + console/layout tools) to C:\eveng-mcp
-#   3. Finds your EVE-NG box (192.168.20.250, 192.168.40.250, then scans both /24s)
-#   4. Writes the Claude Desktop config
+#   3. Finds your EVE-NG box (192.168.40.250, 192.168.20.250, then scans both /24s)
+#   4. Writes the Claude Desktop config: every location it may read, including the current
+#      %LOCALAPPDATA%\Claude-Data\claude_<id>\ folder, changing only this server's entry
+#   5. Writes <repo>\.env with EVENG_HOST
+#
+# Quit Claude Desktop first (system tray > Quit): it rewrites its config while running.
 #
 # Run in PowerShell:
 #   powershell -ExecutionPolicy Bypass -File .\setup-eveng-mcp.ps1
-# Optional: -EveHost 192.168.20.250  -EveUser claude  -EvePass <password>
+# Optional: -EveHost 192.168.40.250  -EveUser claude   (the password is asked for, hidden)
 # Create the 'claude' user in EVE-NG first: Management > User management > Add user (Administrator).
 
 param(
@@ -18,7 +22,16 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-if (-not $EvePass) { $EvePass = Read-Host "EVE-NG password for user '$EveUser'" }
+# Claude Desktop rewrites its config file while it runs, which would undo the changes below.
+if (Get-Process -Name "claude" -ErrorAction SilentlyContinue) {
+    throw "Claude Desktop is running. Quit it first (system tray > Quit), then rerun this script."
+}
+if (-not $EvePass) {   # hidden prompt: the password isn't shown on screen or in a pasted transcript
+    $sec = Read-Host "EVE-NG password for user '$EveUser'" -AsSecureString
+    $b = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec)
+    try { $EvePass = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($b) }
+    finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($b) }
+}
 function Step($m) { Write-Host "`n==> $m" -ForegroundColor Cyan }
 function Ok($m)   { Write-Host "    $m" -ForegroundColor Green }
 function Warn($m) { Write-Host "    $m" -ForegroundColor Yellow }
@@ -119,7 +132,7 @@ function Find-Web([string]$prefix) {
 Step "Looking for EVE-NG"
 $proto = $null
 $candidates = @()
-if ($EveHost) { $candidates += $EveHost } else { $candidates += "192.168.20.250", "192.168.40.250" }
+if ($EveHost) { $candidates += $EveHost } else { $candidates += "192.168.40.250", "192.168.20.250" }
 
 foreach ($ip in $candidates) {
     Write-Host "    trying $ip ..."
@@ -146,49 +159,38 @@ Ok "EVE-NG found at ${proto}://$EveHost"
 
 # ---------------------------------------------------------------- 4. Claude Desktop config
 Step "Writing Claude Desktop config"
-$cfgDirs = @("$env:APPDATA\Claude")
-$store = Get-ChildItem "$env:LOCALAPPDATA\Packages" -Directory -Filter "Claude_*" -ErrorAction SilentlyContinue
-foreach ($s in $store) { $cfgDirs += "$($s.FullName)\LocalCache\Roaming\Claude" }
-
+. (Join-Path $RepoDir "scripts\claude-config.ps1")
+$port = $(if ($proto -eq "https") { "443" } else { "80" })
 $server = [ordered]@{
     command = $uv
     args    = @("--directory", $RepoDir, "run", "eveng-mcp-server", "run", "--transport", "stdio")
     env     = [ordered]@{
         EVENG_HOST     = $EveHost
-        EVENG_PORT     = $(if ($proto -eq "https") { "443" } else { "80" })
+        EVENG_PORT     = $port
         EVENG_PROTOCOL = $proto
         EVENG_USERNAME = $EveUser
         EVENG_PASSWORD = $EvePass
     }
 }
-
-foreach ($dir in $cfgDirs) {
-    if (-not (Test-Path $dir) -and $dir -ne "$env:APPDATA\Claude") { continue }
-    New-Item -ItemType Directory -Force -Path $dir | Out-Null
-    $cfgPath = Join-Path $dir "claude_desktop_config.json"
-    $cfg = $null
-    if (Test-Path $cfgPath) {
-        Copy-Item $cfgPath "$cfgPath.bak-$(Get-Date -Format yyyyMMdd-HHmmss)"
-        try { $cfg = Get-Content $cfgPath -Raw | ConvertFrom-Json } catch { $cfg = $null }
+# Writes every location Claude Desktop may read (current: %LOCALAPPDATA%\Claude-Data\claude_<id>),
+# changing only this server's entry. SSH settings from setup-ssh-key.ps1 are kept on a rerun.
+Update-ClaudeConfigs {
+    param($old)
+    if ($old -and $old.env) {
+        foreach ($p in $old.env.PSObject.Properties) {
+            if ($p.Name -like "EVENG_SSH_*" -and $p.Name -ne "EVENG_SSH_PASSWORD") { $server.env[$p.Name] = $p.Value }
+        }
     }
-    if (-not $cfg) { $cfg = New-Object PSObject }
-    if (-not $cfg.PSObject.Properties["mcpServers"]) {
-        $cfg | Add-Member -NotePropertyName mcpServers -NotePropertyValue (New-Object PSObject)
-    }
-    if ($cfg.mcpServers.PSObject.Properties["eveng-mcp-server"]) {
-        $cfg.mcpServers."eveng-mcp-server" = $server
-    } else {
-        $cfg.mcpServers | Add-Member -NotePropertyName "eveng-mcp-server" -NotePropertyValue $server
-    }
-    $json = $cfg | ConvertTo-Json -Depth 20
-    [IO.File]::WriteAllText($cfgPath, $json, (New-Object Text.UTF8Encoding($false)))
-    Ok "Updated $cfgPath"
+    [pscustomobject]$server
 }
+# The server also reads <repo>\.env, which wins over the Claude config (see README)
+Set-Content -Path (Join-Path $RepoDir ".env") -Value "EVENG_HOST=$EveHost" -Encoding ascii
+Ok "Wrote $RepoDir\.env (EVENG_HOST=$EveHost)"
 
 # ---------------------------------------------------------------- 5. smoke test
 Step "Testing the MCP server against EVE-NG"
 $env:EVENG_HOST = $EveHost; $env:EVENG_USERNAME = $EveUser; $env:EVENG_PASSWORD = $EvePass
-$env:EVENG_PROTOCOL = $proto; $env:EVENG_PORT = $server.env.EVENG_PORT
+$env:EVENG_PROTOCOL = $proto; $env:EVENG_PORT = $port
 Push-Location $RepoDir
 & $uv run python -c "import asyncio; from eveng_mcp_server.core.eveng_client import EVENGClientWrapper as W; c=W(); s=asyncio.run(c.get_server_status()); print('EVE-NG version:', (s.get('data') or {}).get('version'))" 2>$null
 Pop-Location

@@ -35,11 +35,15 @@
 
 1. In EVE-NG create a user for Claude: **Management → User management → Add user** (e.g. `claude`, Administrator).
    A separate user matters: EVE-NG allows one login per user, so sharing `admin` logs you out of the web UI.
-2. Run in PowerShell:
+2. **Quit Claude Desktop** (system tray → Quit). It rewrites its config file while running, which would undo the setup.
+   Then run in PowerShell:
    ```powershell
-   powershell -ExecutionPolicy Bypass -File .\scripts\setup-windows.ps1 -EveHost <eve-ng-ip>
+   Set-ExecutionPolicy -Scope Process Bypass
+   irm https://raw.githubusercontent.com/poyzerj/eveng-mcp/master/scripts/setup-windows.ps1 -OutFile setup-windows.ps1
+   .\setup-windows.ps1 -EveHost <eve-ng-ip>
    ```
-   It installs Git/uv if needed, clones this fork to `C:\eveng-mcp`, finds EVE-NG, and writes the Claude Desktop config.
+   It installs Git/uv if needed, clones this fork to `C:\eveng-mcp`, finds EVE-NG, asks for the EVE-NG password
+   (hidden), and writes the Claude Desktop config and `C:\eveng-mcp\.env`.
 3. Optional, for `power_nodes` (start/stop as the web UI user): set up an SSH key to EVE-NG.
    ```powershell
    powershell -ExecutionPolicy Bypass -File .\scripts\setup-ssh-key.ps1
@@ -47,7 +51,19 @@
    It creates `~\.ssh\eveng_mcp_ed25519`, installs it on EVE-NG (asks for the password once),
    pins EVE-NG's host key, and sets `EVENG_SSH_KEY` in the Claude Desktop config with no password stored.
    The server refuses to connect if EVE-NG's host key ever changes (pinned in `~\.eveng-mcp\known_hosts`).
-4. Fully quit Claude Desktop (system tray → Quit) and reopen it.
+4. Reopen Claude Desktop. The server shows under **Settings → Desktop app → Extensions → Local MCP servers**
+   as `eveng-mcp-server`, *Running*. To check the login outside Claude:
+   `powershell -ExecutionPolicy Bypass -File C:\eveng-mcp\scripts\test-connection.ps1`
+
+**Where Claude Desktop reads its config on Windows.** It depends on the version, so the scripts update every
+location that exists, changing only the `eveng-mcp-server` entry and keeping Claude's own settings (with a backup):
+- `%LOCALAPPDATA%\Claude-Data\claude_<id>\claude_desktop_config.json`: current versions; **Edit config** in the
+  Local MCP servers page opens this one
+- `%LOCALAPPDATA%\Packages\Claude_<id>\LocalCache\Roaming\Claude\`: Microsoft Store installs
+- `%LOCALAPPDATA%\Claude\` and `%APPDATA%\Claude\`: older versions
+
+If the server keeps using an old address after you edited the config, you edited a file Claude Desktop
+doesn't read. Use **Edit config** on that page, or put `EVENG_HOST=<ip>` in `C:\eveng-mcp\.env`, which wins over the config.
 
 **Console notes:** `run_node_commands` reaches nodes started from the web UI by the `admin` user (EVE-NG POD 0).
 Set `EVENG_CONSOLE_POD` in the server's env to use another user's running nodes. Use `power_nodes` to start/stop

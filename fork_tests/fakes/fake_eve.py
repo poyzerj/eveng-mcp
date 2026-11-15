@@ -41,6 +41,20 @@ class H(BaseHTTPRequestHandler):
             return self.send(200, {"code": 200, "status": "success", "message": "User logged in"}, sid)
         if p == "/test/expire":
             SESSIONS.clear(); return self.send(200, {"ok": True})
+        if p == "/test/prune_on_delete":   # act like an EVE-NG that drops a deleted node's cable bridges
+            LAB["prune"] = True; return self.send(200, {"ok": True})
+        if p == "/test/iol_lab":   # replace nodes 1-3 with IOL: R1 router, SW1 switch, R3 router; R1 e0/0-SW1 e1/2, R1 e1/0-R3 e0/1
+            LAB["nodes"] = {
+                "1": {"id": 1, "name": "R1", "template": "iol", "type": "iol", "image": "i86bi_linux-adventerprisek9-ms.SPA.159-3.M6.bin", "left": 100, "top": 100},
+                "2": {"id": 2, "name": "SW1", "template": "iol", "type": "iol", "image": "i86bi_linux_l2-adventerprisek9-ms.SSA.high_iron_20190423.bin", "left": 300, "top": 100},
+                "3": {"id": 3, "name": "R3", "template": "iol", "type": "iol", "image": "i86bi_linux-adventerprisek9-ms.SPA.159-3.M6.bin", "left": 500, "top": 100}}
+            LAB["ifaces"] = {k: {"ethernet": {str(i): {"name": f"e{i // 4}/{i % 4}", "network_id": 0} for i in range(8)}, "serial": []} for k in "123"}
+            LAB["networks"] = {"1": {"id": 1, "name": "R1-SW1", "type": "bridge"}, "2": {"id": 2, "name": "R1-R3", "type": "bridge"}}
+            LAB["ifaces"]["1"]["ethernet"]["0"]["network_id"] = 1; LAB["ifaces"]["2"]["ethernet"]["6"]["network_id"] = 1   # R1 e0/0 - SW1 e1/2
+            LAB["ifaces"]["1"]["ethernet"]["4"]["network_id"] = 2; LAB["ifaces"]["3"]["ethernet"]["1"]["network_id"] = 2   # R1 e1/0 - R3 e0/1
+            LAB["configs"] = {"1": "hostname R1\ninterface Ethernet0/0\n ip address 10.0.0.1 255.255.255.0\ninterface Ethernet1/0\n ip address 10.0.13.1 255.255.255.0\nrouter ospf 1\n passive-interface Ethernet1/0\nend\n",
+                              "2": "hostname SW1\ninterface Ethernet1/2\n switchport mode access\nend\n"}
+            return self.send(200, {"ok": True})
         if p == "/test/iol_dup":   # an old IOL router that shares the name R1 with node 1
             LAB["nodes"]["4"] = {"id": 4, "name": "R1", "template": "iol", "type": "iol", "left": 100, "top": 100}
             LAB["ifaces"]["4"] = {"ethernet": {str(i): {"name": f"e0/{i}", "network_id": 0} for i in range(4)}, "serial": []}
@@ -66,7 +80,13 @@ class H(BaseHTTPRequestHandler):
         sub = m.group(2) or ""
         if sub == "/nodes" and method == "POST":
             b = self.body(); nid = max(int(k) for k in LAB["nodes"]) + 1
-            LAB["nodes"][str(nid)] = {"id": nid, **{k: b.get(k) for k in ("name", "type", "template", "image", "left", "top")}}
+            LAB["nodes"][str(nid)] = {"id": nid, **{k: b.get(k) for k in ("name", "type", "template", "image", "left", "top", "ethernet")}}
+            n = int(b.get("ethernet") or 4)
+            if b.get("template") == "viosl2":       # Gi0/0-0/3, Gi1/0-1/3, ...
+                names = [f"Gi{i // 4}/{i % 4}" for i in range(n)]
+            else:                                   # vIOS router: Gi0/0..Gi0/n-1
+                names = [f"Gi0/{i}" for i in range(n)]
+            LAB["ifaces"][str(nid)] = {"ethernet": [{"name": x, "network_id": 0} for x in names], "serial": []}
             return self.send(201, {"code": 201, "status": "success", "data": {"id": nid}})
         mg = re.match(r"/nodes/(\d+)$", sub)
         if mg and method == "GET":
@@ -108,10 +128,21 @@ class H(BaseHTTPRequestHandler):
         if sub == "/networks" and method == "GET":
             return self.send(200, {"code": 200, "status": "success", "data": LAB["networks"]})
         if sub == "/networks" and method == "POST":
-            b = self.body(); nid = len(LAB["networks"]) + 1
+            b = self.body(); nid = max([int(k) for k in LAB["networks"]] + [0]) + 1
             LAB["networks"][str(nid)] = {"id": nid, "name": b.get("name") or f"Net{nid}", "type": b.get("type")}
             return self.send(201, {"code": 201, "status": "success", "data": {"id": nid}})
         mn = re.match(r"/nodes/(\d+)$", sub)
+        if mn and method == "DELETE":
+            nid = mn.group(1); LAB["nodes"].pop(nid, None)
+            gone = LAB["ifaces"].pop(nid, None)
+            if gone and LAB.get("prune"):
+                for i in eths(gone):
+                    if i["network_id"]:
+                        LAB["networks"].pop(str(i["network_id"]), None)
+                        for ifs in LAB["ifaces"].values():
+                            for j in eths(ifs):
+                                if j["network_id"] == i["network_id"]: j["network_id"] = 0
+            return self.send(200, {"code": 200, "status": "success", "message": "Node deleted"})
         if mn and method == "PUT":
             b = self.body(); b.pop("id", None)
             LAB["nodes"][mn.group(1)].update(b); print("NODE", mn.group(1), b, flush=True)

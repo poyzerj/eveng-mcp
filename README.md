@@ -28,6 +28,7 @@
 - `reset_lab` — stop, wipe and restart nodes so they boot from the lab's exported configs (asks before doing it)
 - `label_lab_ips` — label the canvas from the running devices: IPv4/IPv6 addresses next to each cabled port (access VLAN on switch ports facing a PC), loopbacks and VLAN interfaces under each node; placed to avoid lines, nodes, notes and each other. `clear_lab_labels` removes them; `list_text_objects` shows what a lab's text objects contain
 - `add_lab_text` — put your own text on the canvas (VLAN/group names, "D2 is acting as a L2 switch", a title), beside a node or at exact pixels, with colour, background, size and bold options. `delete_lab_text` removes notes by ID or all at once
+- `replace_nodes` — swap IOL routers for vIOS and IOL L2 switches for vIOSL2 in place: same name and spot on the canvas, every cable moved to the matching port (switches `e1/2` → `Gi1/2`, routers `e1/0` → `Gi0/4`), and the startup-config carried over with interface names rewritten. Shows the plan first and changes nothing until you approve; nodes must be stopped
 - `power_nodes` / `node_power_status` — start, stop, or wipe nodes as the web UI user (POD 0 = admin) by running EVE-NG's `unl_wrapper` over SSH, so they show up in your browser and the console tool can reach them
 
 ## Quick setup (Windows + Claude Desktop)

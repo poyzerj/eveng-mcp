@@ -314,6 +314,42 @@ class StillBooting(ConsoleError):
     pass
 
 
+_CONF_T = re.compile(r"^conf(i(g(u(r(e)?)?)?)?)?(\s+t(e(r(m(i(n(a(l)?)?)?)?)?)?)?)?$", re.I)
+_END = re.compile(r"^(end|\^z)$", re.I)
+_SAVE = re.compile(r"^(wr(i(t(e)?)?)?(\s+mem(o(r(y)?)?)?)?|copy\s+run(ning-config)?\s+start(up-config)?)$", re.I)
+
+
+def tidy_commands(commands: List[str], mode: str, save: bool) -> Tuple[List[str], bool, List[str]]:
+    """Fix common mix-ups before anything is sent. Returns (commands, save, notes).
+
+    Config mode: the tool enters and leaves config mode itself, so 'configure terminal' and
+    'end' lines are dropped, and 'write memory' (rejected inside config mode) becomes save=True
+    so it runs after leaving config mode. Exec mode: a bare 'end' does nothing useful at the
+    '#' prompt (IOS would try to resolve it as a hostname), so it's dropped.
+    """
+    out, notes = [], []
+    for c in commands:
+        line = c.strip()
+        if not line:
+            continue
+        if mode == "config":
+            if _CONF_T.match(line):
+                notes.append(f"skipped '{line}' (the tool enters config mode itself)")
+                continue
+            if _END.match(line):
+                notes.append(f"skipped '{line}' (the tool leaves config mode itself)")
+                continue
+            if _SAVE.match(line):
+                save = True
+                notes.append(f"'{line}' runs after leaving config mode (as save)")
+                continue
+        elif _END.match(line):
+            notes.append(f"skipped '{line}' (nothing to end at the exec prompt)")
+            continue
+        out.append(c)
+    return out, save, notes
+
+
 async def run_commands(host: str, port: int, commands: List[str], mode: str = "exec",
                        save: bool = False, timeout: float = 30, boot_wait: float = 40,
                        lock_wait: float = 15, allow_confirm: bool = False,
@@ -326,13 +362,14 @@ async def run_commands(host: str, port: int, commands: List[str], mode: str = "e
     - Device questions are cancelled and reported unless allow_confirm=True.
     - capture_seconds collects follow-on output (debug); `undebug all` always runs after debug.
     """
+    commands, save, notes = tidy_commands(commands, mode, save)
     lock = _LOCKS.setdefault((host, port), asyncio.Lock())
     try:
         await asyncio.wait_for(lock.acquire(), timeout=lock_wait)
     except asyncio.TimeoutError:
         raise DeviceBusy("Another job is still running on this device. Try again in a moment.")
     con = IOSConsole(host, port, timeout=timeout, allow_confirm=allow_confirm)
-    transcript, errors = [], []
+    transcript, errors = ([f"(note: {n})" for n in notes], [])
     debug_used = False
     t0 = asyncio.get_running_loop().time()
     try:
@@ -374,7 +411,9 @@ async def run_commands(host: str, port: int, commands: List[str], mode: str = "e
                     if skipped:
                         errors.append(f"Stopped here. {len(skipped)} remaining line(s) NOT sent: " + "; ".join(s.strip() for s in skipped))
                     break
-        if mode == "config":
+        if mode == "config" and "(config" in (con.prompt or ""):
+            # only if still in config mode: an 'exit' in the lines may already have left it,
+            # and 'end' at the exec prompt makes IOS try to resolve "end" as a hostname
             await con.command("end")
             if con.between:
                 transcript.append(con.between)

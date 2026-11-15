@@ -44,6 +44,11 @@ async def handle(reader, writer, n, boot_delay):
         elif c in ("terminal length 0", "terminal width 0") and mode == "priv": pass
         elif mode == "priv" and c in ("configure terminal", "conf t"): mode = "config"; ctx = "config"; out = "Enter configuration commands, one per line.  End with CNTL/Z."
         elif mode == "config" and c == "end": mode = "priv"
+        elif mode == "config" and c == "exit":
+            if ctx != "config": ctx = "config"
+            else: mode = "priv"
+        elif mode == "priv" and c == "end":   # real IOS tries to resolve the word as a hostname
+            out = 'Translating "end"...domain server (255.255.255.255)\n% Unknown command or computer name, or unable to find computer address'
         elif mode == "config" and c.startswith("hostname "): s["host"] = c.split()[1]
         elif mode == "config" and c.startswith("interface "): ctx = "config-if"; cur = c.split(None, 1)[1]; s["ifs"].setdefault(cur, {}); s["cur"] = cur
         elif mode == "config" and c.startswith("router ospf"): ctx = "config-router"

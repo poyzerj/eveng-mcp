@@ -114,3 +114,34 @@ def test_logs_after_prompt_do_not_stall_and_are_kept(fake_ios2):
                                ["configure terminal", "interface GigabitEthernet0/0", "shutdown", "no shutdown", "end"]))
     assert time.time() - start < 15        # used to wait 30s per command
     assert "FULL to DOWN" in t             # log lines that landed between commands are kept
+
+
+# ---- command mix-ups (write memory inside config mode, stray 'end') -------
+
+def test_tidy_commands_rules():
+    from eveng_mcp_server.core.console import tidy_commands
+    cmds, save, notes = tidy_commands(["conf t", "interface Gi0/1", "no shutdown", "exit", "wr mem", "end", ""],
+                                      "config", False)
+    assert cmds == ["interface Gi0/1", "no shutdown", "exit"] and save is True and len(notes) == 3
+    cmds, save, _ = tidy_commands(["copy running-config startup-config"], "config", False)
+    assert cmds == [] and save
+    cmds, save, _ = tidy_commands(["do show ip int brief", "write memory"], "exec", False)
+    assert cmds == ["do show ip int brief", "write memory"] and save is False   # exec: write memory is fine
+    cmds, _, notes = tidy_commands(["end", "show clock"], "exec", False)
+    assert cmds == ["show clock"] and notes
+
+
+def test_sw1_sequence_saves_and_never_sends_end_at_exec(fake_ios):
+    """The real SW1 mix-up: 'exit' left config mode, 'write memory' was sent inside config mode,
+    then an extra 'end' at SW1# made IOS do a DNS lookup."""
+    port = console_port(3, fake_ios["pod"])
+    t, errs = run(run_commands(fake_ios["host"], port,
+                               ["interface Gi0/1", "no shutdown", "exit", "write memory", "end"], mode="config"))
+    assert not errs, errs
+    assert "Invalid input" not in t and "Translating" not in t
+    assert "Building configuration" in t                         # saved after leaving config mode
+    # lines that leave config mode themselves: the tool must not add its own 'end' at the exec prompt
+    t, errs = run(run_commands(fake_ios["host"], port, ["interface Gi0/2", "exit", "exit"], mode="config"))
+    assert not errs and "Translating" not in t
+    t, errs = run(run_commands(fake_ios["host"], port, ["end", "show ip interface brief"]))
+    assert "Translating" not in t and "Gi0/1" in t

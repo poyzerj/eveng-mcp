@@ -5,7 +5,6 @@
 #   3. Finds your EVE-NG box (192.168.40.250, 192.168.20.250, then scans both /24s)
 #   4. Writes the Claude Desktop config: every location it may read, including the current
 #      %LOCALAPPDATA%\Claude-Data\claude_<id>\ folder, changing only this server's entry
-#   5. Writes <repo>\.env with EVENG_HOST
 #
 # Quit Claude Desktop first (system tray > Quit): it rewrites its config while running.
 #
@@ -183,9 +182,6 @@ Update-ClaudeConfigs {
     }
     [pscustomobject]$server
 }
-# The server also reads <repo>\.env, which wins over the Claude config (see README)
-Set-Content -Path (Join-Path $RepoDir ".env") -Value "EVENG_HOST=$EveHost" -Encoding ascii
-Ok "Wrote $RepoDir\.env (EVENG_HOST=$EveHost)"
 
 # ---------------------------------------------------------------- 5. smoke test
 Step "Testing the MCP server against EVE-NG"
@@ -195,5 +191,5 @@ Push-Location $RepoDir
 & $uv run python -c "import asyncio; from eveng_mcp_server.core.eveng_client import EVENGClientWrapper as W; c=W(); s=asyncio.run(c.get_server_status()); print('EVE-NG version:', (s.get('data') or {}).get('version'))" 2>$null
 Pop-Location
 
-Write-Host "`nDone. Fully quit Claude Desktop (system tray > Quit), then open it again." -ForegroundColor Green
+Write-Host "`nDone. Open Claude Desktop." -ForegroundColor Green
 Write-Host "In a new chat try: 'List my EVE-NG labs.'" -ForegroundColor Green
